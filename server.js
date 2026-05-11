@@ -605,62 +605,8 @@ app.get("/api/health", (req, res) => {
 });
 
 /* =========================
-   OAUTH PROVIDERS
-========================= */
-
-app.get("/auth/:provider", async (req, res) => {
-  try {
-    const providerAliases = {
-      google: "google",
-      github: "github",
-      microsoft: "azure",
-      azure: "azure",
-      apple: "apple"
-    };
-
-    const requestedProvider = String(req.params.provider || "").toLowerCase();
-    const provider = providerAliases[requestedProvider];
-
-    if (!provider) {
-      return res.status(400).send(`Provider not allowed: ${requestedProvider}`);
-    }
-
-    const callbackBaseUrl = API_BASE_URL.replace(/\/$/, "");
-
-    const scopes =
-      provider === "azure"
-        ? "openid profile email https://graph.microsoft.com/User.Read"
-        : provider === "github"
-          ? "read:user user:email"
-          : "email profile";
-
-    const { data, error } = await supabase.auth.signInWithOAuth({
-      provider,
-      options: {
-        redirectTo: `${callbackBaseUrl}/auth/callback`,
-        scopes,
-        queryParams: {
-          prompt: "select_account"
-        }
-      }
-    });
-
-    if (error || !data.url) {
-      console.error("OAuth URL error:", error);
-
-      return res.status(400).send(error?.message || "OAuth URL error");
-    }
-
-    return res.redirect(data.url);
-  } catch (error) {
-    console.error("OAuth start error:", error);
-
-    return res.status(500).send("OAuth start failed");
-  }
-});
-
-/* =========================
    OAUTH CALLBACK
+   IMPORTANTE: precisa vir antes de /auth/:provider
 ========================= */
 
 app.get("/auth/callback", async (req, res) => {
@@ -718,6 +664,67 @@ app.get("/auth/callback", async (req, res) => {
     console.error("OAuth callback fatal error:", error);
 
     return res.redirect(getFrontendUrl("?error=oauth_callback_failed"));
+  }
+});
+
+
+/* =========================
+   OAUTH PROVIDERS
+========================= */
+
+app.get("/auth/:provider", async (req, res) => {
+  try {
+    const providerAliases = {
+      google: "google",
+      github: "github",
+      microsoft: "azure",
+      azure: "azure",
+      apple: "apple"
+    };
+
+    const requestedProvider = String(req.params.provider || "").toLowerCase();
+
+    if (requestedProvider === "callback") {
+      return res.redirect(getFrontendUrl("?error=invalid_oauth_callback_route"));
+    }
+
+    const provider = providerAliases[requestedProvider];
+
+    if (!provider) {
+      return res.status(400).send(`Provider not allowed: ${requestedProvider}`);
+    }
+
+    const callbackBaseUrl = API_BASE_URL.replace(/\/$/, "");
+
+    const scopes =
+      provider === "azure"
+        ? "openid profile email https://graph.microsoft.com/User.Read"
+        : provider === "github"
+          ? "read:user user:email"
+          : "email profile";
+
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider,
+      options: {
+        redirectTo: `${callbackBaseUrl}/auth/callback`,
+        scopes,
+        queryParams: {
+          prompt: "select_account"
+        }
+      }
+    });
+
+    if (error || !data.url) {
+      console.error("OAuth URL error:", error);
+
+      return res.status(400).send(error?.message || "OAuth URL error");
+    }
+
+    return res.redirect(data.url);
+  } catch (error) {
+    console.error("OAuth start error:", error);
+
+    return res.status(500).send("OAuth start failed");
   }
 });
 
