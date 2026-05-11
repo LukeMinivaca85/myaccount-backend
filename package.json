@@ -1,0 +1,19 @@
+{
+  "name": "lukintosh-myaccount",
+  "version": "1.0.0",
+  "description": "Lukintosh My Account real backend with Express and Supabase Auth",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "latest",
+    "cookie-parser": "latest",
+    "cors": "latest",
+    "dotenv": "latest",
+    "express": "latest",
+    "helmet": "latest",
+    "qrcode": "^1.5.4"
+  }
+}
