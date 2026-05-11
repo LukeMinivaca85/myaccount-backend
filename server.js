@@ -955,19 +955,22 @@ app.post("/api/mfa/enroll", requireAuth, async (req, res) => {
       });
     }
 
-    const secret = data.totp?.secret || null;
-    let uri = data.totp?.uri || null;
-    const supabaseQrCode = data.totp?.qr_code || null;
+   const secret = data.totp?.secret || null;
+const supabaseQrCode = data.totp?.qr_code || null;
 
-    if (!uri && secret) {
-      const issuer = encodeURIComponent("Lukintosh Accounts");
-      const label = encodeURIComponent(
-        `Lukintosh Accounts:${req.user.email || "account"}`
-      );
+// Força o nome exibido no Authenticator.
+// Não usa data.totp?.uri do Supabase, porque ele pode vir com localhost.
+let uri = null;
 
-      uri = `otpauth://totp/${label}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
-    }
+if (secret) {
+  const issuerName = "Lukintosh Accounts";
+  const accountName = req.user.email || "account";
 
+  const issuer = encodeURIComponent(issuerName);
+  const label = encodeURIComponent(`${issuerName}:${accountName}`);
+
+  uri = `otpauth://totp/${label}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
+}
     let qrImage = null;
 
     if (uri) {
