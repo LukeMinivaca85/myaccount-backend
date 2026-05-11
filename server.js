@@ -17,10 +17,12 @@ const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const LOG_HASH_SECRET = process.env.LOG_HASH_SECRET || "lukintosh-dev-secret";
+const LOG_HASH_SECRET = process.env.LOG_HASH_SECRET;
+
+const isProduction = process.env.NODE_ENV === "production";
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  console.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY in .env");
+  console.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY in environment.");
   process.exit(1);
 }
 
@@ -28,10 +30,17 @@ if (!SUPABASE_SERVICE_ROLE_KEY) {
   console.warn("SUPABASE_SERVICE_ROLE_KEY is missing. Some database writes may fail.");
 }
 
+if (!LOG_HASH_SECRET) {
+  console.error("Missing LOG_HASH_SECRET in environment.");
+  process.exit(1);
+}
+
+if (isProduction) {
+  app.set("trust proxy", 1);
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-const isProduction = process.env.NODE_ENV === "production";
 
 const pkceStore = new Map();
 
@@ -51,29 +60,40 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   }
 });
 
-const db = createClient(
-  SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY,
-  {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false
-    }
+const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false
   }
-);
+});
 
 app.use(
   helmet({
-    contentSecurityPolicy: false
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false
   })
 );
 
 app.use(express.json({ limit: "500kb" }));
 app.use(cookieParser());
 
+const allowedOrigins = [
+  "https://myaccount.lukintosh.com",
+  "https://lukintosh.com",
+  "https://www.lukintosh.com"
+];
+
 app.use(
   cors({
-    origin: true,
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS"));
+    },
     credentials: true
   })
 );
@@ -213,6 +233,7 @@ function formatProviderName(provider) {
     google: "Google",
     github: "GitHub",
     azure: "Microsoft",
+    microsoft: "Microsoft",
     apple: "Apple"
   };
 
@@ -542,10 +563,6 @@ async function requireMfaIfEnabled(req, res, next) {
   }
 }
 
-/* =========================
-   STATIC
-========================= */
-
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
@@ -554,14 +571,11 @@ app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
     service: "Lukintosh Accounts API",
-    status: "operational"
+    domain: "myaccount.lukintosh.com",
+    status: "operational",
+    environment: isProduction ? "production" : "development"
   });
 });
-
-/* =========================
-   OAUTH CALLBACK
-   IMPORTANTE: vem antes de /auth/:provider
-========================= */
 
 app.get("/auth/callback", async (req, res) => {
   try {
@@ -612,10 +626,6 @@ app.get("/auth/callback", async (req, res) => {
   }
 });
 
-/* =========================
-   OAUTH PROVIDERS
-========================= */
-
 app.get("/auth/:provider", async (req, res) => {
   try {
     const providerAliases = {
@@ -664,10 +674,6 @@ app.get("/auth/:provider", async (req, res) => {
     return res.status(500).send("OAuth start failed");
   }
 });
-
-/* =========================
-   EMAIL/PASSWORD AUTH
-========================= */
 
 app.post("/api/signup", async (req, res) => {
   try {
@@ -852,10 +858,6 @@ app.post("/api/logout", async (req, res) => {
   }
 });
 
-/* =========================
-   MFA / 2FA REAL
-========================= */
-
 app.get("/api/mfa/status", requireAuth, async (req, res) => {
   try {
     const mfa = await getMfaState(req.accessToken);
@@ -915,14 +917,6 @@ app.post("/api/mfa/enroll", requireAuth, async (req, res) => {
         errorCorrectionLevel: "M"
       });
     }
-
-    console.log("MFA enroll generated:", {
-      factorId: data.id,
-      hasSecret: Boolean(secret),
-      hasUri: Boolean(uri),
-      hasQrImage: Boolean(qrImage),
-      hasSupabaseQrCode: Boolean(supabaseQrCode)
-    });
 
     await logEvent(req, {
       action: "mfa.enroll_started",
@@ -1153,10 +1147,6 @@ app.delete("/api/mfa/factors/:factorId", requireAuth, requireMfaIfEnabled, async
   }
 });
 
-/* =========================
-   ACCOUNT
-========================= */
-
 app.get("/api/me", requireAuth, async (req, res) => {
   const mfa = await getMfaState(req.accessToken).catch(() => null);
 
@@ -1304,10 +1294,6 @@ app.get("/api/account-status", requireAuth, async (req, res) => {
   });
 });
 
-/* =========================
-   DEVICES
-========================= */
-
 app.get("/api/devices", requireAuth, requireMfaIfEnabled, async (req, res) => {
   const { data, error } = await db
     .from("devices")
@@ -1359,10 +1345,6 @@ app.patch("/api/devices/:id/trust", requireAuth, requireMfaIfEnabled, async (req
     device: data
   });
 });
-
-/* =========================
-   SESSIONS
-========================= */
 
 app.get("/api/sessions", requireAuth, async (req, res) => {
   const currentSessionId = req.cookies.lk_session_id;
@@ -1458,10 +1440,6 @@ app.post("/api/sessions/revoke-all-others", requireAuth, requireMfaIfEnabled, as
   return res.json({ ok: true });
 });
 
-/* =========================
-   AUDIT LOGS
-========================= */
-
 app.get("/api/audit-logs", requireAuth, requireMfaIfEnabled, async (req, res) => {
   const { data, error } = await db
     .from("audit_logs")
@@ -1483,10 +1461,6 @@ app.get("/api/audit-logs", requireAuth, requireMfaIfEnabled, async (req, res) =>
   });
 });
 
-/* =========================
-   FALLBACK
-========================= */
-
 app.use((req, res) => {
   if (req.path.startsWith("/api/")) {
     return res.status(404).json({
@@ -1499,5 +1473,7 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Lukintosh Accounts running on http://localhost:${PORT}`);
+  console.log(
+    `Lukintosh Accounts running on port ${PORT} in ${isProduction ? "production" : "development"} mode`
+  );
 });
