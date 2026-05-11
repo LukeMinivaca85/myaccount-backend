@@ -164,10 +164,10 @@ function normalizeReturnTo(value) {
 function getCookieOptions(extra = {}) {
   return {
     httpOnly: true,
-    secure: isProduction,
-    sameSite: isProduction ? "none" : "lax",
+    secure: true,
+    sameSite: "none",
     path: "/",
-    ...(isProduction && COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
+    domain: ".lukintosh.com",
     ...extra
   };
 }
