@@ -4,10 +4,8 @@ import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
-import path from "path";
 import crypto from "crypto";
 import QRCode from "qrcode";
-import { fileURLToPath } from "url";
 
 dotenv.config();
 
@@ -17,30 +15,31 @@ const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const LOG_HASH_SECRET = process.env.LOG_HASH_SECRET;
+const LOG_HASH_SECRET = process.env.LOG_HASH_SECRET || "lukintosh-dev-secret";
+
+const PUBLIC_SITE_URL =
+  process.env.PUBLIC_SITE_URL || "https://myaccount.lukintosh.com";
+
+const API_BASE_URL =
+  process.env.API_BASE_URL || "https://auth.lukintosh.com";
 
 const isProduction = process.env.NODE_ENV === "production";
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  console.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY in environment.");
+  console.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY");
   process.exit(1);
 }
 
 if (!SUPABASE_SERVICE_ROLE_KEY) {
-  console.warn("SUPABASE_SERVICE_ROLE_KEY is missing. Some database writes may fail.");
+  console.warn("SUPABASE_SERVICE_ROLE_KEY is missing. Database writes may fail.");
 }
 
-if (!LOG_HASH_SECRET) {
-  console.error("Missing LOG_HASH_SECRET in environment.");
-  process.exit(1);
-}
-
-if (isProduction) {
-  app.set("trust proxy", 1);
-}
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "https://myaccount.lukintosh.com",
+  PUBLIC_SITE_URL
+];
 
 const pkceStore = new Map();
 
@@ -60,45 +59,70 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   }
 });
 
-const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY, {
-  auth: {
-    persistSession: false,
-    autoRefreshToken: false
+const db = createClient(
+  SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY,
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false
+    }
   }
-});
+);
+
+app.set("trust proxy", 1);
 
 app.use(
   helmet({
-    contentSecurityPolicy: false,
-    crossOriginEmbedderPolicy: false
+    contentSecurityPolicy: false
   })
 );
 
 app.use(express.json({ limit: "500kb" }));
 app.use(cookieParser());
 
-const allowedOrigins = [
-  "https://myaccount.lukintosh.com",
-  "https://lukintosh.com",
-  "https://www.lukintosh.com"
-];
-
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
+      if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
 
-      return callback(new Error("Not allowed by CORS"));
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
     },
     credentials: true
   })
 );
 
-app.use(express.static(__dirname));
+function getFrontendUrl(path = "") {
+  const base = PUBLIC_SITE_URL.replace(/\/$/, "");
+  const cleanPath = String(path || "");
+
+  if (!cleanPath) return base;
+
+  if (cleanPath.startsWith("?")) {
+    return `${base}/${cleanPath}`;
+  }
+
+  if (cleanPath.startsWith("/")) {
+    return `${base}${cleanPath}`;
+  }
+
+  return `${base}/${cleanPath}`;
+}
+
+function getApiUrl(path = "") {
+  const base = API_BASE_URL.replace(/\/$/, "");
+  const cleanPath = String(path || "");
+
+  if (!cleanPath) return base;
+
+  if (cleanPath.startsWith("/")) {
+    return `${base}${cleanPath}`;
+  }
+
+  return `${base}/${cleanPath}`;
+}
 
 function hashValue(value) {
   if (!value) return null;
@@ -148,36 +172,26 @@ function parseDevice(userAgent) {
   };
 }
 
-function getSiteUrl(req) {
-  if (process.env.PUBLIC_SITE_URL) {
-    return process.env.PUBLIC_SITE_URL.replace(/\/$/, "");
-  }
-
-  return `${req.protocol}://${req.get("host")}`;
-}
-
 function setAuthCookies(res, session, internalSessionId) {
-  res.cookie("lk_access_token", session.access_token, {
+  const cookieOptions = {
     httpOnly: true,
     secure: isProduction,
-    sameSite: "lax",
-    path: "/",
+    sameSite: isProduction ? "none" : "lax",
+    path: "/"
+  };
+
+  res.cookie("lk_access_token", session.access_token, {
+    ...cookieOptions,
     maxAge: 1000 * 60 * 60
   });
 
   res.cookie("lk_refresh_token", session.refresh_token, {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: "lax",
-    path: "/",
+    ...cookieOptions,
     maxAge: 1000 * 60 * 60 * 24 * 30
   });
 
   res.cookie("lk_session_id", internalSessionId, {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: "lax",
-    path: "/",
+    ...cookieOptions,
     maxAge: 1000 * 60 * 60 * 24 * 30
   });
 }
@@ -186,7 +200,7 @@ function clearAuthCookies(res) {
   const options = {
     httpOnly: true,
     secure: isProduction,
-    sameSite: "lax",
+    sameSite: isProduction ? "none" : "lax",
     path: "/"
   };
 
@@ -233,7 +247,6 @@ function formatProviderName(provider) {
     google: "Google",
     github: "GitHub",
     azure: "Microsoft",
-    microsoft: "Microsoft",
     apple: "Apple"
   };
 
@@ -278,7 +291,10 @@ function publicUser(user) {
       user.email?.split("@")[0] ||
       "Lukintosh Account",
 
-    avatarUrl: user.user_metadata?.avatar_url || user.user_metadata?.picture || null,
+    avatarUrl:
+      user.user_metadata?.avatar_url ||
+      user.user_metadata?.picture ||
+      null,
 
     provider: mainProvider,
     providerName: formatProviderName(mainProvider),
@@ -527,7 +543,8 @@ async function requireAuth(req, res, next) {
 
     req.user = auth.user;
     req.accessToken = auth.accessToken;
-    next();
+
+    return next();
   } catch (error) {
     console.error("Auth middleware error:", error);
     clearAuthCookies(res);
@@ -552,7 +569,8 @@ async function requireMfaIfEnabled(req, res, next) {
     }
 
     req.mfa = mfa;
-    next();
+
+    return next();
   } catch (error) {
     console.error("MFA guard error:", error);
 
@@ -563,68 +581,32 @@ async function requireMfaIfEnabled(req, res, next) {
   }
 }
 
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
+/* =========================
+   HEALTH
+========================= */
 
-app.get("/api/health", (req, res) => {
-  res.json({
+app.get("/", (req, res) => {
+  return res.json({
     ok: true,
-    service: "Lukintosh Accounts API",
-    domain: "myaccount.lukintosh.com",
-    status: "operational",
-    environment: isProduction ? "production" : "development"
+    service: "Lukintosh Accounts Auth Service",
+    frontend: PUBLIC_SITE_URL,
+    api: API_BASE_URL
   });
 });
 
-app.get("/auth/callback", async (req, res) => {
-  try {
-    const code = req.query.code;
-    const error = req.query.error;
-    const errorDescription = req.query.error_description;
-
-    if (error) {
-      console.error("OAuth provider returned error:", error, errorDescription);
-      return res.redirect(
-        `/?error=${encodeURIComponent(String(errorDescription || error))}`
-      );
-    }
-
-    if (!code) {
-      return res.redirect("/?error=missing_oauth_code_pkce_required");
-    }
-
-    const { data, error: exchangeError } =
-      await supabase.auth.exchangeCodeForSession(String(code));
-
-    if (exchangeError || !data.session || !data.user) {
-      console.error("OAuth callback error:", exchangeError);
-      return res.redirect(
-        `/?error=${encodeURIComponent(exchangeError?.message || "oauth_failed")}`
-      );
-    }
-
-    await registerDeviceAndSession(req, res, data.user, data.session);
-
-    req.user = data.user;
-    req.accessToken = data.session.access_token;
-
-    await logEvent(req, {
-      userId: data.user.id,
-      action: "account.oauth_login",
-      target: "auth.user",
-      metadata: {
-        provider: data.user.app_metadata?.provider || "unknown",
-        providers: data.user.app_metadata?.providers || []
-      }
-    });
-
-    return res.redirect("/");
-  } catch (error) {
-    console.error("OAuth callback fatal error:", error);
-    return res.redirect("/?error=oauth_callback_failed");
-  }
+app.get("/api/health", (req, res) => {
+  return res.json({
+    ok: true,
+    service: "Lukintosh Accounts API",
+    status: "operational",
+    frontend: PUBLIC_SITE_URL,
+    api: API_BASE_URL
+  });
 });
+
+/* =========================
+   OAUTH PROVIDERS
+========================= */
 
 app.get("/auth/:provider", async (req, res) => {
   try {
@@ -643,19 +625,19 @@ app.get("/auth/:provider", async (req, res) => {
       return res.status(400).send(`Provider not allowed: ${requestedProvider}`);
     }
 
-    const siteUrl = getSiteUrl(req);
+    const callbackBaseUrl = API_BASE_URL.replace(/\/$/, "");
 
     const scopes =
       provider === "azure"
         ? "openid profile email https://graph.microsoft.com/User.Read"
         : provider === "github"
-        ? "read:user user:email"
-        : "email profile";
+          ? "read:user user:email"
+          : "email profile";
 
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
-        redirectTo: `${siteUrl}/auth/callback`,
+        redirectTo: `${callbackBaseUrl}/auth/callback`,
         scopes,
         queryParams: {
           prompt: "select_account"
@@ -665,15 +647,83 @@ app.get("/auth/:provider", async (req, res) => {
 
     if (error || !data.url) {
       console.error("OAuth URL error:", error);
+
       return res.status(400).send(error?.message || "OAuth URL error");
     }
 
     return res.redirect(data.url);
   } catch (error) {
     console.error("OAuth start error:", error);
+
     return res.status(500).send("OAuth start failed");
   }
 });
+
+/* =========================
+   OAUTH CALLBACK
+========================= */
+
+app.get("/auth/callback", async (req, res) => {
+  try {
+    const code = req.query.code;
+    const error = req.query.error;
+    const errorDescription = req.query.error_description;
+
+    if (error) {
+      console.error("OAuth provider returned error:", error, errorDescription);
+
+      return res.redirect(
+        getFrontendUrl(
+          `?error=${encodeURIComponent(String(errorDescription || error))}`
+        )
+      );
+    }
+
+    if (!code) {
+      return res.redirect(
+        getFrontendUrl("?error=missing_oauth_code_pkce_required")
+      );
+    }
+
+    const { data, error: exchangeError } =
+      await supabase.auth.exchangeCodeForSession(String(code));
+
+    if (exchangeError || !data.session || !data.user) {
+      console.error("OAuth callback error:", exchangeError);
+
+      return res.redirect(
+        getFrontendUrl(
+          `?error=${encodeURIComponent(exchangeError?.message || "oauth_failed")}`
+        )
+      );
+    }
+
+    await registerDeviceAndSession(req, res, data.user, data.session);
+
+    req.user = data.user;
+    req.accessToken = data.session.access_token;
+
+    await logEvent(req, {
+      userId: data.user.id,
+      action: "account.oauth_login",
+      target: "auth.user",
+      metadata: {
+        provider: data.user.app_metadata?.provider || "unknown",
+        providers: data.user.app_metadata?.providers || []
+      }
+    });
+
+    return res.redirect(getFrontendUrl());
+  } catch (error) {
+    console.error("OAuth callback fatal error:", error);
+
+    return res.redirect(getFrontendUrl("?error=oauth_callback_failed"));
+  }
+});
+
+/* =========================
+   EMAIL/PASSWORD AUTH
+========================= */
 
 app.post("/api/signup", async (req, res) => {
   try {
@@ -693,8 +743,6 @@ app.post("/api/signup", async (req, res) => {
       });
     }
 
-    const siteUrl = process.env.PUBLIC_SITE_URL || "http://localhost:3000";
-
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
@@ -702,7 +750,7 @@ app.post("/api/signup", async (req, res) => {
         data: {
           display_name: displayName || "Lukintosh Account"
         },
-        emailRedirectTo: `${siteUrl}/auth/callback`
+        emailRedirectTo: getApiUrl("/auth/callback")
       }
     });
 
@@ -858,6 +906,10 @@ app.post("/api/logout", async (req, res) => {
   }
 });
 
+/* =========================
+   MFA / 2FA REAL
+========================= */
+
 app.get("/api/mfa/status", requireAuth, async (req, res) => {
   try {
     const mfa = await getMfaState(req.accessToken);
@@ -902,7 +954,9 @@ app.post("/api/mfa/enroll", requireAuth, async (req, res) => {
 
     if (!uri && secret) {
       const issuer = encodeURIComponent("Lukintosh Accounts");
-      const label = encodeURIComponent(`Lukintosh Accounts:${req.user.email || "account"}`);
+      const label = encodeURIComponent(
+        `Lukintosh Accounts:${req.user.email || "account"}`
+      );
 
       uri = `otpauth://totp/${label}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
     }
@@ -1147,6 +1201,10 @@ app.delete("/api/mfa/factors/:factorId", requireAuth, requireMfaIfEnabled, async
   }
 });
 
+/* =========================
+   ACCOUNT
+========================= */
+
 app.get("/api/me", requireAuth, async (req, res) => {
   const mfa = await getMfaState(req.accessToken).catch(() => null);
 
@@ -1294,6 +1352,10 @@ app.get("/api/account-status", requireAuth, async (req, res) => {
   });
 });
 
+/* =========================
+   DEVICES
+========================= */
+
 app.get("/api/devices", requireAuth, requireMfaIfEnabled, async (req, res) => {
   const { data, error } = await db
     .from("devices")
@@ -1345,6 +1407,10 @@ app.patch("/api/devices/:id/trust", requireAuth, requireMfaIfEnabled, async (req
     device: data
   });
 });
+
+/* =========================
+   SESSIONS
+========================= */
 
 app.get("/api/sessions", requireAuth, async (req, res) => {
   const currentSessionId = req.cookies.lk_session_id;
@@ -1440,6 +1506,10 @@ app.post("/api/sessions/revoke-all-others", requireAuth, requireMfaIfEnabled, as
   return res.json({ ok: true });
 });
 
+/* =========================
+   AUDIT LOGS
+========================= */
+
 app.get("/api/audit-logs", requireAuth, requireMfaIfEnabled, async (req, res) => {
   const { data, error } = await db
     .from("audit_logs")
@@ -1461,6 +1531,10 @@ app.get("/api/audit-logs", requireAuth, requireMfaIfEnabled, async (req, res) =>
   });
 });
 
+/* =========================
+   FALLBACK
+========================= */
+
 app.use((req, res) => {
   if (req.path.startsWith("/api/")) {
     return res.status(404).json({
@@ -1469,11 +1543,14 @@ app.use((req, res) => {
     });
   }
 
-  return res.sendFile(path.join(__dirname, "index.html"));
+  return res.status(404).json({
+    ok: false,
+    error: "route_not_found"
+  });
 });
 
 app.listen(PORT, () => {
-  console.log(
-    `Lukintosh Accounts running on port ${PORT} in ${isProduction ? "production" : "development"} mode`
-  );
+  console.log(`Lukintosh Accounts Auth Service running on port ${PORT}`);
+  console.log(`Frontend: ${PUBLIC_SITE_URL}`);
+  console.log(`API/Auth: ${API_BASE_URL}`);
 });
