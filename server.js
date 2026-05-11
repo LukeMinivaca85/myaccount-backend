@@ -6,6 +6,7 @@ import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 import QRCode from "qrcode";
+import { Resend } from "resend";
 
 dotenv.config();
 
@@ -25,6 +26,14 @@ const API_BASE_URL =
 
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || null;
 const isProduction = process.env.NODE_ENV === "production";
+
+const RESEND_API_KEY = process.env.RESEND_API_KEY || null;
+const EMAIL_FROM =
+  process.env.EMAIL_FROM || "Lukintosh Accounts <onboarding@resend.dev>";
+const EMAIL_REPLY_TO =
+  process.env.EMAIL_REPLY_TO || "security@lukintosh.com";
+
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY");
@@ -163,6 +172,15 @@ function getCookieOptions(extra = {}) {
   };
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function hashValue(value) {
   if (!value) return null;
 
@@ -276,8 +294,8 @@ function setOAuthReturnCookie(res, returnTo) {
 function getOAuthReturnTo(req) {
   return normalizeReturnTo(
     req.query.returnTo ||
-    req.cookies.lk_oauth_return_to ||
-    PUBLIC_SITE_URL
+      req.cookies.lk_oauth_return_to ||
+      PUBLIC_SITE_URL
   );
 }
 
@@ -388,6 +406,134 @@ function publicUser(user) {
     emailConfirmedAt: user.email_confirmed_at
   };
 }
+
+/* =========================
+   EMAILS / RESEND
+========================= */
+
+function getSecurityEmailBase({ title, preview, body }) {
+  return `
+    <!doctype html>
+    <html lang="pt-BR">
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+      </head>
+      <body style="margin:0;background:#050507;color:#f5f5f7;font-family:Inter,Arial,sans-serif;">
+        <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
+          ${escapeHtml(preview)}
+        </div>
+
+        <div style="max-width:640px;margin:0 auto;padding:32px 18px;">
+          <div style="border:1px solid rgba(255,255,255,.14);background:#0b0b10;border-radius:28px;overflow:hidden;">
+            <div style="padding:28px 28px 18px;">
+              <div style="display:inline-block;width:42px;height:42px;border-radius:14px;background:linear-gradient(145deg,#fff,#8ab4ff 45%,#b49cff);margin-bottom:18px;"></div>
+
+              <h1 style="margin:0;font-size:30px;line-height:1;letter-spacing:-1.4px;color:#f5f5f7;">
+                ${escapeHtml(title)}
+              </h1>
+
+              <p style="margin:12px 0 0;color:#a6a6ad;line-height:1.55;font-size:15px;">
+                Lukintosh Accounts Security
+              </p>
+            </div>
+
+            <div style="padding:0 28px 28px;">
+              ${body}
+
+              <div style="margin-top:26px;padding-top:18px;border-top:1px solid rgba(255,255,255,.12);">
+                <p style="margin:0;color:#73737d;font-size:12px;line-height:1.55;">
+                  Este e-mail foi enviado automaticamente por Lukintosh Accounts.
+                  Se você não reconhece essa atividade, altere sua senha e revise suas sessões.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+}
+
+async function sendEmail({ to, subject, html }) {
+  if (!resend) {
+    console.warn("Resend disabled: RESEND_API_KEY is missing.");
+    return { skipped: true };
+  }
+
+  const { data, error } = await resend.emails.send({
+    from: EMAIL_FROM,
+    to: [to],
+    subject,
+    html,
+    replyTo: EMAIL_REPLY_TO
+  });
+
+  if (error) {
+    console.warn("Resend email failed:", error);
+    return { error };
+  }
+
+  return { data };
+}
+
+async function sendNewLoginEmail({
+  user,
+  req,
+  providerLabel = "Lukintosh Accounts"
+}) {
+  if (!user?.email) return { skipped: true };
+
+  const userAgent = getUserAgent(req);
+  const parsed = parseDevice(userAgent);
+  const ip = getClientIp(req);
+
+  const when = new Date().toLocaleString("pt-BR", {
+    timeZone: "America/Sao_Paulo"
+  });
+
+  const html = getSecurityEmailBase({
+    title: "Novo login detectado",
+    preview: "Um novo login foi detectado na sua conta Lukintosh.",
+    body: `
+      <p style="margin:0 0 18px;color:#d9d9df;line-height:1.6;font-size:15px;">
+        Detectamos um novo acesso à sua conta Lukintosh.
+      </p>
+
+      <div style="border:1px solid rgba(255,255,255,.12);border-radius:20px;padding:16px;background:rgba(255,255,255,.05);">
+        <p style="margin:0 0 8px;color:#a6a6ad;font-size:13px;">Conta</p>
+        <p style="margin:0 0 14px;color:#f5f5f7;font-size:15px;">${escapeHtml(user.email)}</p>
+
+        <p style="margin:0 0 8px;color:#a6a6ad;font-size:13px;">Método</p>
+        <p style="margin:0 0 14px;color:#f5f5f7;font-size:15px;">${escapeHtml(providerLabel)}</p>
+
+        <p style="margin:0 0 8px;color:#a6a6ad;font-size:13px;">Dispositivo</p>
+        <p style="margin:0 0 14px;color:#f5f5f7;font-size:15px;">${escapeHtml(parsed.deviceName)}</p>
+
+        <p style="margin:0 0 8px;color:#a6a6ad;font-size:13px;">IP aproximado</p>
+        <p style="margin:0 0 14px;color:#f5f5f7;font-size:15px;">${escapeHtml(ip || "Indisponível")}</p>
+
+        <p style="margin:0 0 8px;color:#a6a6ad;font-size:13px;">Data</p>
+        <p style="margin:0;color:#f5f5f7;font-size:15px;">${escapeHtml(when)}</p>
+      </div>
+
+      <a href="${escapeHtml(PUBLIC_SITE_URL)}"
+         style="display:inline-block;margin-top:20px;background:#f5f5f7;color:#050507;text-decoration:none;font-weight:800;border-radius:999px;padding:13px 18px;">
+        Revisar minha conta
+      </a>
+    `
+  });
+
+  return sendEmail({
+    to: user.email,
+    subject: "Novo login detectado na sua conta Lukintosh",
+    html
+  });
+}
+
+/* =========================
+   LOGS / SESSIONS
+========================= */
 
 async function logEvent(req, options = {}) {
   try {
@@ -657,7 +803,8 @@ app.get("/", (req, res) => {
     service: "Lukintosh Accounts Auth Service",
     frontend: PUBLIC_SITE_URL,
     api: API_BASE_URL,
-    cookieDomain: COOKIE_DOMAIN
+    cookieDomain: COOKIE_DOMAIN,
+    emailEnabled: Boolean(resend)
   });
 });
 
@@ -668,13 +815,13 @@ app.get("/api/health", (req, res) => {
     status: "operational",
     frontend: PUBLIC_SITE_URL,
     api: API_BASE_URL,
-    cookieDomain: COOKIE_DOMAIN
+    cookieDomain: COOKIE_DOMAIN,
+    emailEnabled: Boolean(resend)
   });
 });
 
 /* =========================
    OAUTH CALLBACK
-   IMPORTANTE: vem antes de /auth/:provider
 ========================= */
 
 app.get("/auth/callback", async (req, res) => {
@@ -716,6 +863,16 @@ app.get("/auth/callback", async (req, res) => {
 
     req.user = data.user;
     req.accessToken = data.session.access_token;
+
+    const provider = data.user.app_metadata?.provider || "oauth";
+
+    sendNewLoginEmail({
+      user: data.user,
+      req,
+      providerLabel: formatProviderName(provider)
+    }).catch((emailError) => {
+      console.warn("OAuth login email failed:", emailError.message);
+    });
 
     await logEvent(req, {
       userId: data.user.id,
@@ -847,6 +1004,14 @@ app.post("/api/signup", async (req, res) => {
       req.user = data.user;
       req.accessToken = data.session.access_token;
 
+      sendNewLoginEmail({
+        user: data.user,
+        req,
+        providerLabel: "E-mail e senha"
+      }).catch((emailError) => {
+        console.warn("Signup login email failed:", emailError.message);
+      });
+
       await logEvent(req, {
         userId: data.user.id,
         action: "account.signup",
@@ -906,6 +1071,14 @@ app.post("/api/login", async (req, res) => {
     req.accessToken = data.session.access_token;
 
     const mfa = await getMfaState(data.session.access_token).catch(() => null);
+
+    sendNewLoginEmail({
+      user: data.user,
+      req,
+      providerLabel: "E-mail e senha"
+    }).catch((emailError) => {
+      console.warn("Password login email failed:", emailError.message);
+    });
 
     await logEvent(req, {
       userId: data.user.id,
@@ -1636,4 +1809,5 @@ app.listen(PORT, () => {
   console.log(`Frontend: ${PUBLIC_SITE_URL}`);
   console.log(`API/Auth: ${API_BASE_URL}`);
   console.log(`Cookie domain: ${COOKIE_DOMAIN || "host-only"}`);
+  console.log(`Email enabled: ${Boolean(resend)}`);
 });
