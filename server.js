@@ -23,6 +23,7 @@ const PUBLIC_SITE_URL =
 const API_BASE_URL =
   process.env.API_BASE_URL || "https://auth.lukintosh.com";
 
+const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || null;
 const isProduction = process.env.NODE_ENV === "production";
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -37,9 +38,20 @@ if (!SUPABASE_SERVICE_ROLE_KEY) {
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:5173",
+  "https://lukintosh.com",
+  "https://www.lukintosh.com",
   "https://myaccount.lukintosh.com",
-  PUBLIC_SITE_URL
+  "https://auth.lukintosh.com",
+  PUBLIC_SITE_URL,
+  API_BASE_URL
 ];
+
+const ALLOWED_RETURN_ORIGINS = new Set([
+  "https://lukintosh.com",
+  "https://www.lukintosh.com",
+  "https://myaccount.lukintosh.com",
+  "https://auth.lukintosh.com"
+]);
 
 const pkceStore = new Map();
 
@@ -124,6 +136,33 @@ function getApiUrl(path = "") {
   return `${base}/${cleanPath}`;
 }
 
+function normalizeReturnTo(value) {
+  try {
+    if (!value) return PUBLIC_SITE_URL;
+
+    const url = new URL(String(value));
+
+    if (!ALLOWED_RETURN_ORIGINS.has(url.origin)) {
+      return PUBLIC_SITE_URL;
+    }
+
+    return url.toString();
+  } catch {
+    return PUBLIC_SITE_URL;
+  }
+}
+
+function getCookieOptions(extra = {}) {
+  return {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
+    path: "/",
+    ...(isProduction && COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
+    ...extra
+  };
+}
+
 function hashValue(value) {
   if (!value) return null;
 
@@ -173,12 +212,7 @@ function parseDevice(userAgent) {
 }
 
 function setAuthCookies(res, session, internalSessionId) {
-  const cookieOptions = {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: isProduction ? "none" : "lax",
-    path: "/"
-  };
+  const cookieOptions = getCookieOptions();
 
   res.cookie("lk_access_token", session.access_token, {
     ...cookieOptions,
@@ -197,16 +231,12 @@ function setAuthCookies(res, session, internalSessionId) {
 }
 
 function clearAuthCookies(res) {
-  const options = {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: isProduction ? "none" : "lax",
-    path: "/"
-  };
+  const options = getCookieOptions();
 
   res.clearCookie("lk_access_token", options);
   res.clearCookie("lk_refresh_token", options);
   res.clearCookie("lk_session_id", options);
+  res.clearCookie("lk_oauth_return_to", options);
 
   res.cookie("lk_access_token", "", {
     ...options,
@@ -221,6 +251,42 @@ function clearAuthCookies(res) {
   });
 
   res.cookie("lk_session_id", "", {
+    ...options,
+    maxAge: 0,
+    expires: new Date(0)
+  });
+
+  res.cookie("lk_oauth_return_to", "", {
+    ...options,
+    maxAge: 0,
+    expires: new Date(0)
+  });
+}
+
+function setOAuthReturnCookie(res, returnTo) {
+  res.cookie(
+    "lk_oauth_return_to",
+    normalizeReturnTo(returnTo),
+    getCookieOptions({
+      maxAge: 1000 * 60 * 10
+    })
+  );
+}
+
+function getOAuthReturnTo(req) {
+  return normalizeReturnTo(
+    req.query.returnTo ||
+    req.cookies.lk_oauth_return_to ||
+    PUBLIC_SITE_URL
+  );
+}
+
+function clearOAuthReturnCookie(res) {
+  const options = getCookieOptions();
+
+  res.clearCookie("lk_oauth_return_to", options);
+
+  res.cookie("lk_oauth_return_to", "", {
     ...options,
     maxAge: 0,
     expires: new Date(0)
@@ -590,7 +656,8 @@ app.get("/", (req, res) => {
     ok: true,
     service: "Lukintosh Accounts Auth Service",
     frontend: PUBLIC_SITE_URL,
-    api: API_BASE_URL
+    api: API_BASE_URL,
+    cookieDomain: COOKIE_DOMAIN
   });
 });
 
@@ -600,13 +667,14 @@ app.get("/api/health", (req, res) => {
     service: "Lukintosh Accounts API",
     status: "operational",
     frontend: PUBLIC_SITE_URL,
-    api: API_BASE_URL
+    api: API_BASE_URL,
+    cookieDomain: COOKIE_DOMAIN
   });
 });
 
 /* =========================
    OAUTH CALLBACK
-   IMPORTANTE: precisa vir antes de /auth/:provider
+   IMPORTANTE: vem antes de /auth/:provider
 ========================= */
 
 app.get("/auth/callback", async (req, res) => {
@@ -659,14 +727,16 @@ app.get("/auth/callback", async (req, res) => {
       }
     });
 
-    return res.redirect(getFrontendUrl());
+    const returnTo = getOAuthReturnTo(req);
+    clearOAuthReturnCookie(res);
+
+    return res.redirect(returnTo);
   } catch (error) {
     console.error("OAuth callback fatal error:", error);
 
     return res.redirect(getFrontendUrl("?error=oauth_callback_failed"));
   }
 });
-
 
 /* =========================
    OAUTH PROVIDERS
@@ -694,6 +764,9 @@ app.get("/auth/:provider", async (req, res) => {
       return res.status(400).send(`Provider not allowed: ${requestedProvider}`);
     }
 
+    const returnTo = normalizeReturnTo(req.query.returnTo || PUBLIC_SITE_URL);
+    setOAuthReturnCookie(res, returnTo);
+
     const callbackBaseUrl = API_BASE_URL.replace(/\/$/, "");
 
     const scopes =
@@ -706,7 +779,7 @@ app.get("/auth/:provider", async (req, res) => {
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
-        redirectTo: `${callbackBaseUrl}/auth/callback`,
+        redirectTo: `${callbackBaseUrl}/auth/callback?returnTo=${encodeURIComponent(returnTo)}`,
         scopes,
         queryParams: {
           prompt: "select_account"
@@ -955,22 +1028,21 @@ app.post("/api/mfa/enroll", requireAuth, async (req, res) => {
       });
     }
 
-   const secret = data.totp?.secret || null;
-const supabaseQrCode = data.totp?.qr_code || null;
+    const secret = data.totp?.secret || null;
+    const supabaseQrCode = data.totp?.qr_code || null;
 
-// Força o nome exibido no Authenticator.
-// Não usa data.totp?.uri do Supabase, porque ele pode vir com localhost.
-let uri = null;
+    let uri = null;
 
-if (secret) {
-  const issuerName = "Lukintosh Accounts";
-  const accountName = req.user.email || "account";
+    if (secret) {
+      const issuerName = "Lukintosh Accounts";
+      const accountName = req.user.email || "account";
 
-  const issuer = encodeURIComponent(issuerName);
-  const label = encodeURIComponent(`${issuerName}:${accountName}`);
+      const issuer = encodeURIComponent(issuerName);
+      const label = encodeURIComponent(`${issuerName}:${accountName}`);
 
-  uri = `otpauth://totp/${label}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
-}
+      uri = `otpauth://totp/${label}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
+    }
+
     let qrImage = null;
 
     if (uri) {
@@ -1563,4 +1635,5 @@ app.listen(PORT, () => {
   console.log(`Lukintosh Accounts Auth Service running on port ${PORT}`);
   console.log(`Frontend: ${PUBLIC_SITE_URL}`);
   console.log(`API/Auth: ${API_BASE_URL}`);
+  console.log(`Cookie domain: ${COOKIE_DOMAIN || "host-only"}`);
 });
