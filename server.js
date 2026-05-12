@@ -24,12 +24,11 @@ const PUBLIC_SITE_URL =
 const API_BASE_URL =
   process.env.API_BASE_URL || "https://auth.lukintosh.com";
 
-const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || null;
-const isProduction = process.env.NODE_ENV === "production";
+const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || ".lukintosh.com";
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY || null;
 const EMAIL_FROM =
-  process.env.EMAIL_FROM || "Lukintosh Accounts <onboarding@resend.dev>";
+  process.env.EMAIL_FROM || "Lukintosh Accounts <security@lukintosh.com>";
 const EMAIL_REPLY_TO =
   process.env.EMAIL_REPLY_TO || "security@lukintosh.com";
 
@@ -44,23 +43,9 @@ if (!SUPABASE_SERVICE_ROLE_KEY) {
   console.warn("SUPABASE_SERVICE_ROLE_KEY is missing. Database writes may fail.");
 }
 
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://lukintosh.com",
-  "https://www.lukintosh.com",
-  "https://myaccount.lukintosh.com",
-  "https://auth.lukintosh.com",
-  PUBLIC_SITE_URL,
-  API_BASE_URL
-];
-
-const ALLOWED_RETURN_ORIGINS = new Set([
-  "https://lukintosh.com",
-  "https://www.lukintosh.com",
-  "https://myaccount.lukintosh.com",
-  "https://auth.lukintosh.com"
-]);
+/* =========================
+   CLIENTS
+========================= */
 
 const pkceStore = new Map();
 
@@ -91,6 +76,28 @@ const db = createClient(
   }
 );
 
+/* =========================
+   APP SETUP
+========================= */
+
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "https://lukintosh.com",
+  "https://www.lukintosh.com",
+  "https://myaccount.lukintosh.com",
+  "https://auth.lukintosh.com",
+  PUBLIC_SITE_URL,
+  API_BASE_URL
+];
+
+const ALLOWED_RETURN_ORIGINS = new Set([
+  "https://lukintosh.com",
+  "https://www.lukintosh.com",
+  "https://myaccount.lukintosh.com",
+  "https://auth.lukintosh.com"
+]);
+
 app.set("trust proxy", 1);
 
 app.use(
@@ -114,6 +121,29 @@ app.use(
     credentials: true
   })
 );
+
+/* =========================
+   IN-MEMORY EMAIL CODE STORE
+   Depois, se quiser, a gente troca por tabela Supabase.
+========================= */
+
+const emailLoginChallenges = new Map();
+
+function cleanupEmailChallenges() {
+  const now = Date.now();
+
+  for (const [id, challenge] of emailLoginChallenges.entries()) {
+    if (challenge.expiresAt <= now || challenge.used) {
+      emailLoginChallenges.delete(id);
+    }
+  }
+}
+
+setInterval(cleanupEmailChallenges, 1000 * 60 * 5).unref();
+
+/* =========================
+   HELPERS
+========================= */
 
 function getFrontendUrl(path = "") {
   const base = PUBLIC_SITE_URL.replace(/\/$/, "");
@@ -188,6 +218,17 @@ function hashValue(value) {
     .createHash("sha256")
     .update(`${LOG_HASH_SECRET}:${value}`)
     .digest("hex");
+}
+
+function hashCode(code) {
+  return crypto
+    .createHash("sha256")
+    .update(`${LOG_HASH_SECRET}:email-code:${code}`)
+    .digest("hex");
+}
+
+function generateSixDigitCode() {
+  return String(crypto.randomInt(0, 1000000)).padStart(6, "0");
 }
 
 function getClientIp(req) {
@@ -293,8 +334,8 @@ function setOAuthReturnCookie(res, returnTo) {
 
 function getOAuthReturnTo(req) {
   return normalizeReturnTo(
-    req.query.returnTo ||
-      req.cookies.lk_oauth_return_to ||
+    req.cookies.lk_oauth_return_to ||
+      req.query.returnTo ||
       PUBLIC_SITE_URL
   );
 }
@@ -331,7 +372,8 @@ function formatProviderName(provider) {
     google: "Google",
     github: "GitHub",
     azure: "Microsoft",
-    apple: "Apple"
+    apple: "Apple",
+    oauth: "OAuth"
   };
 
   return map[provider] || provider || "Unknown";
@@ -419,6 +461,7 @@ function getSecurityEmailBase({ title, preview, body }) {
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
       </head>
+
       <body style="margin:0;background:#050507;color:#f5f5f7;font-family:Inter,Arial,sans-serif;">
         <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
           ${escapeHtml(preview)}
@@ -527,6 +570,37 @@ async function sendNewLoginEmail({
   return sendEmail({
     to: user.email,
     subject: "Novo login detectado na sua conta Lukintosh",
+    html
+  });
+}
+
+async function sendLoginCodeEmail({ user, code }) {
+  if (!user?.email) return { skipped: true };
+
+  const html = getSecurityEmailBase({
+    title: "Seu código Lukintosh",
+    preview: `Seu código de verificação é ${code}.`,
+    body: `
+      <p style="margin:0 0 18px;color:#d9d9df;line-height:1.6;font-size:15px;">
+        Use o código abaixo para concluir seu login no Lukintosh Accounts.
+      </p>
+
+      <div style="margin:20px 0;border:1px solid rgba(255,255,255,.12);border-radius:24px;padding:22px;background:rgba(255,255,255,.05);text-align:center;">
+        <p style="margin:0 0 8px;color:#a6a6ad;font-size:13px;">Código de verificação</p>
+        <p style="margin:0;color:#f5f5f7;font-size:42px;letter-spacing:8px;font-weight:900;">
+          ${escapeHtml(code)}
+        </p>
+      </div>
+
+      <p style="margin:0;color:#a6a6ad;line-height:1.6;font-size:14px;">
+        Este código expira em 10 minutos. Se você não tentou entrar, ignore este e-mail e revise a segurança da sua conta.
+      </p>
+    `
+  });
+
+  return sendEmail({
+    to: user.email,
+    subject: `Seu código Lukintosh Accounts é ${code}`,
     html
   });
 }
@@ -744,6 +818,21 @@ async function refreshSessionIfNeeded(req, res) {
 
 async function requireAuth(req, res, next) {
   try {
+    const authorization = req.headers.authorization || "";
+    const bearerToken = authorization.startsWith("Bearer ")
+      ? authorization.slice("Bearer ".length).trim()
+      : null;
+
+    if (bearerToken) {
+      const { data, error } = await supabase.auth.getUser(bearerToken);
+
+      if (!error && data.user) {
+        req.user = data.user;
+        req.accessToken = bearerToken;
+        return next();
+      }
+    }
+
     const auth = await refreshSessionIfNeeded(req, res);
 
     if (!auth) {
@@ -804,6 +893,8 @@ app.get("/", (req, res) => {
     frontend: PUBLIC_SITE_URL,
     api: API_BASE_URL,
     cookieDomain: COOKIE_DOMAIN,
+    cookieMode: "forced-lukintosh-domain-v2",
+    nodeEnv: process.env.NODE_ENV || null,
     emailEnabled: Boolean(resend)
   });
 });
@@ -816,7 +907,10 @@ app.get("/api/health", (req, res) => {
     frontend: PUBLIC_SITE_URL,
     api: API_BASE_URL,
     cookieDomain: COOKIE_DOMAIN,
-    emailEnabled: Boolean(resend)
+    cookieMode: "forced-lukintosh-domain-v2",
+    nodeEnv: process.env.NODE_ENV || null,
+    emailEnabled: Boolean(resend),
+    emailFrom: EMAIL_FROM
   });
 });
 
@@ -936,7 +1030,7 @@ app.get("/auth/:provider", async (req, res) => {
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
-        redirectTo: `${callbackBaseUrl}/auth/callback?returnTo=${encodeURIComponent(returnTo)}`,
+        redirectTo: `${callbackBaseUrl}/auth/callback`,
         scopes,
         queryParams: {
           prompt: "select_account"
@@ -959,7 +1053,7 @@ app.get("/auth/:provider", async (req, res) => {
 });
 
 /* =========================
-   EMAIL/PASSWORD AUTH
+   EMAIL/PASSWORD AUTH + 6 DIGITS
 ========================= */
 
 app.post("/api/signup", async (req, res) => {
@@ -1065,35 +1159,50 @@ app.post("/api/login", async (req, res) => {
       });
     }
 
-    await registerDeviceAndSession(req, res, data.user, data.session);
+    const code = generateSixDigitCode();
+    const challengeId = crypto.randomUUID();
 
-    req.user = data.user;
-    req.accessToken = data.session.access_token;
-
-    const mfa = await getMfaState(data.session.access_token).catch(() => null);
-
-    sendNewLoginEmail({
-      user: data.user,
-      req,
-      providerLabel: "E-mail e senha"
-    }).catch((emailError) => {
-      console.warn("Password login email failed:", emailError.message);
+    emailLoginChallenges.set(challengeId, {
+      id: challengeId,
+      userId: data.user.id,
+      email: data.user.email,
+      codeHash: hashCode(code),
+      attempts: 0,
+      maxAttempts: 5,
+      expiresAt: Date.now() + 1000 * 60 * 10,
+      used: false,
+      session: data.session,
+      user: data.user
     });
+
+    const emailResult = await sendLoginCodeEmail({
+      user: data.user,
+      code
+    });
+
+    if (emailResult?.error) {
+      emailLoginChallenges.delete(challengeId);
+
+      return res.status(500).json({
+        ok: false,
+        error: "email_code_send_failed"
+      });
+    }
 
     await logEvent(req, {
       userId: data.user.id,
-      action: "account.login",
+      action: "account.login_code_sent",
       target: "auth.user",
       metadata: {
-        mfaRequired: Boolean(mfa?.needsChallenge)
+        email: data.user.email
       }
     });
 
     return res.json({
       ok: true,
-      user: publicUser(data.user),
-      mfaRequired: Boolean(mfa?.needsChallenge),
-      mfa
+      emailCodeRequired: true,
+      challengeId,
+      message: "Código enviado para seu e-mail."
     });
   } catch (error) {
     console.error("Login error:", error);
@@ -1105,9 +1214,102 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
+app.post("/api/login/verify-code", async (req, res) => {
+  try {
+    const { challengeId, code } = req.body;
+
+    if (!challengeId || !code) {
+      return res.status(400).json({
+        ok: false,
+        error: "challenge_id_and_code_required"
+      });
+    }
+
+    const challenge = emailLoginChallenges.get(challengeId);
+
+    if (!challenge || challenge.used || challenge.expiresAt <= Date.now()) {
+      return res.status(400).json({
+        ok: false,
+        error: "invalid_code"
+      });
+    }
+
+    if (challenge.attempts >= challenge.maxAttempts) {
+      emailLoginChallenges.delete(challengeId);
+
+      return res.status(400).json({
+        ok: false,
+        error: "too_many_code_attempts"
+      });
+    }
+
+    challenge.attempts += 1;
+
+    if (hashCode(String(code).trim()) !== challenge.codeHash) {
+      return res.status(400).json({
+        ok: false,
+        error: "invalid_code"
+      });
+    }
+
+    challenge.used = true;
+    emailLoginChallenges.delete(challengeId);
+
+    await registerDeviceAndSession(req, res, challenge.user, challenge.session);
+
+    req.user = challenge.user;
+    req.accessToken = challenge.session.access_token;
+
+    const mfa = await getMfaState(challenge.session.access_token).catch(() => null);
+
+    sendNewLoginEmail({
+      user: challenge.user,
+      req,
+      providerLabel: "E-mail e senha"
+    }).catch((emailError) => {
+      console.warn("Password login email failed:", emailError.message);
+    });
+
+    await logEvent(req, {
+      userId: challenge.user.id,
+      action: "account.login",
+      target: "auth.user",
+      metadata: {
+        method: "email_password_code",
+        mfaRequired: Boolean(mfa?.needsChallenge)
+      }
+    });
+
+    return res.json({
+      ok: true,
+      user: publicUser(challenge.user),
+      mfaRequired: Boolean(mfa?.needsChallenge),
+      mfa,
+      session: {
+        accessToken: challenge.session.access_token,
+        refreshToken: challenge.session.refresh_token,
+        expiresAt: challenge.session.expires_at
+      }
+    });
+  } catch (error) {
+    console.error("Verify login code error:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: "internal_server_error"
+    });
+  }
+});
+
 app.post("/api/logout", async (req, res) => {
   try {
-    const accessToken = req.cookies.lk_access_token;
+    const cookieAccessToken = req.cookies.lk_access_token;
+    const authorization = req.headers.authorization || "";
+    const bearerToken = authorization.startsWith("Bearer ")
+      ? authorization.slice("Bearer ".length).trim()
+      : null;
+
+    const accessToken = cookieAccessToken || bearerToken;
     const internalSessionId = req.cookies.lk_session_id;
 
     let userId = null;
@@ -1809,5 +2011,6 @@ app.listen(PORT, () => {
   console.log(`Frontend: ${PUBLIC_SITE_URL}`);
   console.log(`API/Auth: ${API_BASE_URL}`);
   console.log(`Cookie domain: ${COOKIE_DOMAIN || "host-only"}`);
+  console.log(`Cookie mode: forced-lukintosh-domain-v2`);
   console.log(`Email enabled: ${Boolean(resend)}`);
 });
