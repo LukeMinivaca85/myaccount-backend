@@ -16,6 +16,7 @@ const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
 const LOG_HASH_SECRET = process.env.LOG_HASH_SECRET || "lukintosh-dev-secret";
 
 const PUBLIC_SITE_URL =
@@ -27,8 +28,10 @@ const API_BASE_URL =
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || ".lukintosh.com";
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY || null;
+
 const EMAIL_FROM =
   process.env.EMAIL_FROM || "Lukintosh Accounts <security@lukintosh.com>";
+
 const EMAIL_REPLY_TO =
   process.env.EMAIL_REPLY_TO || "security@lukintosh.com";
 
@@ -44,7 +47,7 @@ if (!SUPABASE_SERVICE_ROLE_KEY) {
 }
 
 /* =========================
-   CLIENTS
+   SUPABASE CLIENTS
 ========================= */
 
 const pkceStore = new Map();
@@ -87,6 +90,11 @@ const allowedOrigins = [
   "https://www.lukintosh.com",
   "https://myaccount.lukintosh.com",
   "https://auth.lukintosh.com",
+  "https://developer.lukintosh.com",
+  "https://support.lukintosh.com",
+  "https://store.lukintosh.com",
+  "https://cloud.lukintosh.com",
+  "https://accounts.lukintosh.com",
   PUBLIC_SITE_URL,
   API_BASE_URL
 ];
@@ -95,7 +103,12 @@ const ALLOWED_RETURN_ORIGINS = new Set([
   "https://lukintosh.com",
   "https://www.lukintosh.com",
   "https://myaccount.lukintosh.com",
-  "https://auth.lukintosh.com"
+  "https://auth.lukintosh.com",
+  "https://developer.lukintosh.com",
+  "https://support.lukintosh.com",
+  "https://store.lukintosh.com",
+  "https://cloud.lukintosh.com",
+  "https://accounts.lukintosh.com"
 ]);
 
 app.set("trust proxy", 1);
@@ -123,8 +136,7 @@ app.use(
 );
 
 /* =========================
-   IN-MEMORY EMAIL CODE STORE
-   Depois, se quiser, a gente troca por tabela Supabase.
+   EMAIL CODE STORE
 ========================= */
 
 const emailLoginChallenges = new Map();
@@ -197,7 +209,7 @@ function getCookieOptions(extra = {}) {
     secure: true,
     sameSite: "none",
     path: "/",
-    domain: ".lukintosh.com",
+    domain: COOKIE_DOMAIN,
     ...extra
   };
 }
@@ -287,39 +299,39 @@ function setAuthCookies(res, session, internalSessionId) {
     ...cookieOptions,
     maxAge: 1000 * 60 * 60 * 24 * 30
   });
+
+  res.cookie("lukintosh_session", session.access_token, {
+    ...cookieOptions,
+    maxAge: 1000 * 60 * 60
+  });
+
+  res.cookie("lukintosh_refresh", session.refresh_token, {
+    ...cookieOptions,
+    maxAge: 1000 * 60 * 60 * 24 * 30
+  });
 }
 
 function clearAuthCookies(res) {
   const options = getCookieOptions();
 
-  res.clearCookie("lk_access_token", options);
-  res.clearCookie("lk_refresh_token", options);
-  res.clearCookie("lk_session_id", options);
-  res.clearCookie("lk_oauth_return_to", options);
+  const cookieNames = [
+    "lk_access_token",
+    "lk_refresh_token",
+    "lk_session_id",
+    "lk_oauth_return_to",
+    "lukintosh_session",
+    "lukintosh_refresh"
+  ];
 
-  res.cookie("lk_access_token", "", {
-    ...options,
-    maxAge: 0,
-    expires: new Date(0)
-  });
+  for (const name of cookieNames) {
+    res.clearCookie(name, options);
 
-  res.cookie("lk_refresh_token", "", {
-    ...options,
-    maxAge: 0,
-    expires: new Date(0)
-  });
-
-  res.cookie("lk_session_id", "", {
-    ...options,
-    maxAge: 0,
-    expires: new Date(0)
-  });
-
-  res.cookie("lk_oauth_return_to", "", {
-    ...options,
-    maxAge: 0,
-    expires: new Date(0)
-  });
+    res.cookie(name, "", {
+      ...options,
+      maxAge: 0,
+      expires: new Date(0)
+    });
+  }
 }
 
 function setOAuthReturnCookie(res, returnTo) {
@@ -450,7 +462,7 @@ function publicUser(user) {
 }
 
 /* =========================
-   EMAILS / RESEND
+   EMAILS
 ========================= */
 
 function getSecurityEmailBase({ title, preview, body }) {
@@ -759,9 +771,17 @@ async function getMfaState(accessToken) {
 }
 
 async function refreshSessionIfNeeded(req, res) {
-  const accessToken = req.cookies.lk_access_token;
-  const refreshToken = req.cookies.lk_refresh_token;
-  const internalSessionId = req.cookies.lk_session_id;
+  const accessToken =
+    req.cookies.lk_access_token ||
+    req.cookies.lukintosh_session ||
+    null;
+
+  const refreshToken =
+    req.cookies.lk_refresh_token ||
+    req.cookies.lukintosh_refresh ||
+    null;
+
+  const internalSessionId = req.cookies.lk_session_id || null;
 
   if (internalSessionId) {
     const { data: internalSession } = await db
@@ -819,11 +839,12 @@ async function refreshSessionIfNeeded(req, res) {
 async function requireAuth(req, res, next) {
   try {
     const authorization = req.headers.authorization || "";
+
     const bearerToken = authorization.startsWith("Bearer ")
       ? authorization.slice("Bearer ".length).trim()
       : null;
 
-    if (bearerToken) {
+    if (bearerToken && bearerToken !== "null" && bearerToken !== "undefined") {
       const { data, error } = await supabase.auth.getUser(bearerToken);
 
       if (!error && data.user) {
@@ -893,7 +914,7 @@ app.get("/", (req, res) => {
     frontend: PUBLIC_SITE_URL,
     api: API_BASE_URL,
     cookieDomain: COOKIE_DOMAIN,
-    cookieMode: "forced-lukintosh-domain-v2",
+    cookieMode: "global-lukintosh-cookie",
     nodeEnv: process.env.NODE_ENV || null,
     emailEnabled: Boolean(resend)
   });
@@ -907,7 +928,7 @@ app.get("/api/health", (req, res) => {
     frontend: PUBLIC_SITE_URL,
     api: API_BASE_URL,
     cookieDomain: COOKIE_DOMAIN,
-    cookieMode: "forced-lukintosh-domain-v2",
+    cookieMode: "global-lukintosh-cookie",
     nodeEnv: process.env.NODE_ENV || null,
     emailEnabled: Boolean(resend),
     emailFrom: EMAIL_FROM
@@ -1053,7 +1074,7 @@ app.get("/auth/:provider", async (req, res) => {
 });
 
 /* =========================
-   EMAIL/PASSWORD AUTH + 6 DIGITS
+   EMAIL/PASSWORD AUTH
 ========================= */
 
 app.post("/api/signup", async (req, res) => {
@@ -1118,7 +1139,14 @@ app.post("/api/signup", async (req, res) => {
       message: data.session
         ? "Conta criada e login realizado."
         : "Conta criada. Verifique seu e-mail se a confirmação estiver ativada.",
-      user: data.user ? publicUser(data.user) : null
+      user: data.user ? publicUser(data.user) : null,
+      session: data.session
+        ? {
+            accessToken: data.session.access_token,
+            refreshToken: data.session.refresh_token,
+            expiresAt: data.session.expires_at
+          }
+        : null
     });
   } catch (error) {
     console.error("Signup error:", error);
@@ -1303,8 +1331,13 @@ app.post("/api/login/verify-code", async (req, res) => {
 
 app.post("/api/logout", async (req, res) => {
   try {
-    const cookieAccessToken = req.cookies.lk_access_token;
+    const cookieAccessToken =
+      req.cookies.lk_access_token ||
+      req.cookies.lukintosh_session ||
+      null;
+
     const authorization = req.headers.authorization || "";
+
     const bearerToken = authorization.startsWith("Bearer ")
       ? authorization.slice("Bearer ".length).trim()
       : null;
@@ -1362,7 +1395,7 @@ app.post("/api/logout", async (req, res) => {
 });
 
 /* =========================
-   MFA / 2FA REAL
+   MFA / 2FA
 ========================= */
 
 app.get("/api/mfa/status", requireAuth, async (req, res) => {
@@ -2011,6 +2044,6 @@ app.listen(PORT, () => {
   console.log(`Frontend: ${PUBLIC_SITE_URL}`);
   console.log(`API/Auth: ${API_BASE_URL}`);
   console.log(`Cookie domain: ${COOKIE_DOMAIN || "host-only"}`);
-  console.log(`Cookie mode: forced-lukintosh-domain-v2`);
+  console.log(`Cookie mode: global-lukintosh-cookie`);
   console.log(`Email enabled: ${Boolean(resend)}`);
 });
