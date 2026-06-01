@@ -121,7 +121,7 @@ app.use(
 
 app.use(express.json({ limit: "500kb" }));
 app.use(cookieParser());
-
+app.use(express.urlencoded({ extended: true }));
 app.use(
   cors({
     origin(origin, callback) {
@@ -2020,7 +2020,290 @@ app.get("/api/audit-logs", requireAuth, requireMfaIfEnabled, async (req, res) =>
     logs: data || []
   });
 });
+/* =========================
+   SUPABASE OAUTH SERVER CONSENT
+========================= */
 
+function getScopeLabel(scope) {
+  const labels = {
+    openid: "Identificar sua conta Lukintosh",
+    profile: "Ver seu perfil básico",
+    email: "Ver seu e-mail"
+  };
+
+  return labels[scope] || scope;
+}
+
+app.get("/oauth/consent", async (req, res) => {
+  try {
+    const authorizationId = String(req.query.authorization_id || "");
+
+    if (!authorizationId) {
+      return res.status(400).send("Missing authorization_id");
+    }
+
+    const auth = await refreshSessionIfNeeded(req, res);
+
+    if (!auth) {
+      const returnTo = getApiUrl(
+        `/oauth/consent?authorization_id=${encodeURIComponent(authorizationId)}`
+      );
+
+      return res.redirect(
+        getFrontendUrl(`?returnTo=${encodeURIComponent(returnTo)}`)
+      );
+    }
+
+    const authedSupabase = createAuthedSupabaseClient(auth.accessToken);
+
+    const { data: authDetails, error } =
+      await authedSupabase.auth.oauth.getAuthorizationDetails(authorizationId);
+
+    if (error || !authDetails) {
+      console.error("OAuth getAuthorizationDetails error:", error);
+
+      return res.status(400).send(
+        escapeHtml(error?.message || "Invalid OAuth authorization request")
+      );
+    }
+
+    // Se o usuário já tinha consentido antes, o Supabase pode mandar redirecionar direto.
+    if (!("authorization_id" in authDetails)) {
+      return res.redirect(authDetails.redirect_url);
+    }
+
+    const clientName =
+      authDetails.client?.name ||
+      authDetails.client?.client_name ||
+      "Aplicativo externo";
+
+    const redirectUri = authDetails.redirect_uri || "Redirect URI indisponível";
+
+    const scopes = String(authDetails.scope || "")
+      .split(" ")
+      .map((scope) => scope.trim())
+      .filter(Boolean);
+
+    const scopeItems = scopes.length
+      ? scopes
+          .map((scope) => `<li>${escapeHtml(getScopeLabel(scope))}</li>`)
+          .join("")
+      : "<li>Identificar sua conta Lukintosh</li>";
+
+    return res.send(`
+      <!doctype html>
+      <html lang="pt-BR">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>Entrar com Lukintosh</title>
+
+          <style>
+            * {
+              box-sizing: border-box;
+            }
+
+            body {
+              margin: 0;
+              min-height: 100vh;
+              display: grid;
+              place-items: center;
+              background:
+                radial-gradient(circle at top, rgba(120, 145, 255, .22), transparent 34%),
+                #050507;
+              color: #f5f5f7;
+              font-family: Inter, Arial, sans-serif;
+              padding: 22px;
+            }
+
+            .card {
+              width: min(480px, 100%);
+              padding: 30px;
+              border-radius: 30px;
+              background: rgba(255,255,255,.075);
+              border: 1px solid rgba(255,255,255,.14);
+              box-shadow: 0 30px 90px rgba(0,0,0,.48);
+              backdrop-filter: blur(18px);
+            }
+
+            .logo {
+              width: 44px;
+              height: 44px;
+              border-radius: 15px;
+              background: linear-gradient(145deg,#fff,#8ab4ff 45%,#b49cff);
+              margin-bottom: 18px;
+            }
+
+            h1 {
+              margin: 0 0 10px;
+              font-size: 29px;
+              line-height: 1;
+              letter-spacing: -1.3px;
+            }
+
+            p {
+              color: #b9b9c4;
+              line-height: 1.55;
+              margin: 10px 0;
+            }
+
+            .app-box {
+              margin: 20px 0;
+              padding: 16px;
+              border-radius: 20px;
+              background: rgba(255,255,255,.06);
+              border: 1px solid rgba(255,255,255,.1);
+            }
+
+            .app-name {
+              font-size: 18px;
+              font-weight: 850;
+              color: #ffffff;
+            }
+
+            .uri {
+              margin-top: 8px;
+              color: #8e8e99;
+              font-size: 12px;
+              overflow-wrap: anywhere;
+            }
+
+            ul {
+              margin: 12px 0 20px;
+              padding-left: 20px;
+              color: #e5e8ff;
+              line-height: 1.7;
+            }
+
+            button {
+              width: 100%;
+              border: 0;
+              border-radius: 999px;
+              padding: 14px 18px;
+              margin-top: 10px;
+              font-weight: 850;
+              cursor: pointer;
+              font-size: 15px;
+            }
+
+            .approve {
+              background: #f5f5f7;
+              color: #050507;
+            }
+
+            .deny {
+              background: rgba(255,255,255,.12);
+              color: #f5f5f7;
+            }
+
+            .footer {
+              margin-top: 18px;
+              color: #767681;
+              font-size: 12px;
+            }
+          </style>
+        </head>
+
+        <body>
+          <main class="card">
+            <div class="logo"></div>
+
+            <h1>Entrar com Lukintosh</h1>
+
+            <p>
+              Revise a solicitação antes de continuar.
+            </p>
+
+            <div class="app-box">
+              <div class="app-name">${escapeHtml(clientName)}</div>
+              <div class="uri">${escapeHtml(redirectUri)}</div>
+            </div>
+
+            <p>Este app quer acessar:</p>
+
+            <ul>
+              ${scopeItems}
+            </ul>
+
+            <form method="post" action="/oauth/consent/decision">
+              <input type="hidden" name="authorization_id" value="${escapeHtml(authorizationId)}" />
+              <input type="hidden" name="decision" value="approve" />
+              <button class="approve" type="submit">Continuar com Lukintosh</button>
+            </form>
+
+            <form method="post" action="/oauth/consent/decision">
+              <input type="hidden" name="authorization_id" value="${escapeHtml(authorizationId)}" />
+              <input type="hidden" name="decision" value="deny" />
+              <button class="deny" type="submit">Cancelar</button>
+            </form>
+
+            <p class="footer">
+              Lukintosh Accounts protege sua identidade e nunca compartilha sua senha com este app.
+            </p>
+          </main>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error("OAuth consent page error:", error);
+
+    return res.status(500).send("OAuth consent failed");
+  }
+});
+
+app.post("/oauth/consent/decision", requireAuth, async (req, res) => {
+  try {
+    const authorizationId = String(req.body.authorization_id || "");
+    const decision = String(req.body.decision || "");
+
+    if (!authorizationId) {
+      return res.status(400).send("Missing authorization_id");
+    }
+
+    const authedSupabase = createAuthedSupabaseClient(req.accessToken);
+
+    let result;
+
+    if (decision === "approve") {
+      result = await authedSupabase.auth.oauth.approveAuthorization(
+        authorizationId
+      );
+    } else if (decision === "deny") {
+      result = await authedSupabase.auth.oauth.denyAuthorization(
+        authorizationId
+      );
+    } else {
+      return res.status(400).send("Invalid OAuth decision");
+    }
+
+    const { data, error } = result;
+
+    if (error || !data?.redirect_url) {
+      console.error("OAuth decision error:", error);
+
+      return res.status(400).send(
+        escapeHtml(error?.message || "OAuth decision failed")
+      );
+    }
+
+    await logEvent(req, {
+      action:
+        decision === "approve"
+          ? "oauth.authorization_approved"
+          : "oauth.authorization_denied",
+      target: "oauth.authorization",
+      metadata: {
+        authorizationId
+      }
+    });
+
+    return res.redirect(data.redirect_url);
+  } catch (error) {
+    console.error("OAuth consent decision fatal error:", error);
+
+    return res.status(500).send("OAuth decision failed");
+  }
+});
 /* =========================
    FALLBACK
 ========================= */
