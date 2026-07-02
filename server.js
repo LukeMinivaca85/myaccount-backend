@@ -301,15 +301,36 @@ function base64UrlJson(value) {
 }
 
 function getPrivateKeyPem() {
-  return process.env.OIDC_PRIVATE_KEY_PEM?.replace(/\\n/g, "\n") ||
-    fallbackKeyPair.privateKey.export({ type: "pkcs8", format: "pem" });
+  const configuredPem = process.env.OIDC_PRIVATE_KEY_PEM?.replace(/\\n/g, "\n");
+
+  if (configuredPem) {
+    try {
+      crypto.createPrivateKey(configuredPem);
+      return configuredPem;
+    } catch {
+      console.warn("OIDC_PRIVATE_KEY_PEM is invalid. Using runtime fallback key.");
+    }
+  }
+
+  return fallbackKeyPair.privateKey.export({ type: "pkcs8", format: "pem" });
 }
 
 function getPublicKeyObject() {
   const publicPem = process.env.OIDC_PUBLIC_KEY_PEM?.replace(/\\n/g, "\n");
-  return publicPem
-    ? crypto.createPublicKey(publicPem)
-    : fallbackKeyPair.publicKey;
+
+  if (publicPem) {
+    try {
+      return crypto.createPublicKey(publicPem);
+    } catch {
+      console.warn("OIDC_PUBLIC_KEY_PEM is invalid. Trying private key public export.");
+    }
+  }
+
+  try {
+    return crypto.createPublicKey(getPrivateKeyPem());
+  } catch {
+    return fallbackKeyPair.publicKey;
+  }
 }
 
 function signJwt(payload, expiresInSeconds = 3600) {
