@@ -85,7 +85,19 @@ const db = createClient(
 
 const allowedOrigins = [
   "http://localhost:3000",
+  "http://localhost:3010",
   "http://localhost:5173",
+  "http://localhost:5500",
+  "http://localhost:5501",
+  "http://localhost:8000",
+  "http://localhost:8080",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:3010",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:5500",
+  "http://127.0.0.1:5501",
+  "http://127.0.0.1:8000",
+  "http://127.0.0.1:8080",
   "https://lukintosh.com",
   "https://www.lukintosh.com",
   "https://myaccount.lukintosh.com",
@@ -230,6 +242,48 @@ function hashValue(value) {
     .createHash("sha256")
     .update(`${LOG_HASH_SECRET}:${value}`)
     .digest("hex");
+}
+
+const DEFAULT_OAUTH_SCOPES = ["openid", "profile", "email"];
+const ALLOWED_OAUTH_SCOPES = new Set(DEFAULT_OAUTH_SCOPES);
+
+function generateOpaqueToken(prefix, byteLength = 32) {
+  return `${prefix}_${crypto.randomBytes(byteLength).toString("base64url")}`;
+}
+
+function normalizeScopes(value) {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || DEFAULT_OAUTH_SCOPES.join(" ")).split(/[,\s]+/);
+
+  const scopes = source
+    .map((scope) => String(scope || "").trim().toLowerCase())
+    .filter(Boolean);
+
+  const unique = [...new Set(scopes.length ? scopes : DEFAULT_OAUTH_SCOPES)];
+
+  return unique.filter((scope) => ALLOWED_OAUTH_SCOPES.has(scope));
+}
+
+function normalizeRedirectUris(value) {
+  const source = Array.isArray(value) ? value : [value];
+
+  return source
+    .map((uri) => String(uri || "").trim())
+    .filter(Boolean)
+    .map((uri) => {
+      const parsed = new URL(uri);
+
+      const isLocalhost =
+        parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+
+      if (parsed.protocol !== "https:" && !(isLocalhost && parsed.protocol === "http:")) {
+        throw new Error("redirect_uri_must_use_https");
+      }
+
+      parsed.hash = "";
+      return parsed.toString();
+    });
 }
 
 function hashCode(code) {
@@ -2020,6 +2074,158 @@ app.get("/api/audit-logs", requireAuth, requireMfaIfEnabled, async (req, res) =>
     logs: data || []
   });
 });
+
+/* =========================
+   DEVELOPER OAUTH APPS
+========================= */
+
+function publicOAuthClient(row, includeSecret = null) {
+  return {
+    id: row.id,
+    clientId: row.client_id,
+    clientSecret: includeSecret,
+    name: row.name,
+    redirectUris: row.redirect_uris || [],
+    allowedScopes: row.allowed_scopes || DEFAULT_OAUTH_SCOPES,
+    isActive: row.is_active !== false,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+app.get("/api/developer/oauth/apps", requireAuth, async (req, res) => {
+  const { data, error } = await db
+    .from("oauth_clients")
+    .select("id, client_id, name, redirect_uris, allowed_scopes, is_active, created_at, updated_at")
+    .eq("created_by", req.user.id)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    return res.status(400).json({
+      ok: false,
+      error: "developer_apps_load_failed",
+      message: error.message
+    });
+  }
+
+  return res.json({
+    ok: true,
+    apps: (data || []).map((row) => publicOAuthClient(row))
+  });
+});
+
+app.post("/api/developer/oauth/apps", requireAuth, requireMfaIfEnabled, async (req, res) => {
+  try {
+    const name = String(req.body.name || "").trim();
+    const redirectUris = normalizeRedirectUris(
+      req.body.redirectUris || req.body.redirect_uris || req.body.callbackUrl || req.body.redirectUri
+    );
+    const allowedScopes = normalizeScopes(req.body.allowedScopes || req.body.allowed_scopes || req.body.scopes);
+
+    if (name.length < 2 || name.length > 80) {
+      return res.status(400).json({
+        ok: false,
+        error: "invalid_app_name"
+      });
+    }
+
+    if (!redirectUris.length) {
+      return res.status(400).json({
+        ok: false,
+        error: "missing_redirect_uri"
+      });
+    }
+
+    if (!allowedScopes.length) {
+      return res.status(400).json({
+        ok: false,
+        error: "invalid_scopes"
+      });
+    }
+
+    const clientId = generateOpaqueToken("lk_client", 18);
+    const clientSecret = generateOpaqueToken("lk_secret", 36);
+
+    const { data, error } = await db
+      .from("oauth_clients")
+      .insert({
+        client_id: clientId,
+        client_secret_hash: hashValue(clientSecret),
+        name,
+        redirect_uris: redirectUris,
+        allowed_scopes: allowedScopes,
+        is_public: false,
+        is_active: true,
+        created_by: req.user.id,
+        updated_at: new Date().toISOString()
+      })
+      .select("id, client_id, name, redirect_uris, allowed_scopes, is_active, created_at, updated_at")
+      .single();
+
+    if (error) {
+      return res.status(400).json({
+        ok: false,
+        error: "developer_app_create_failed",
+        message: error.message,
+        hint: "Run supabase-oauth-developer-apps.sql before creating apps."
+      });
+    }
+
+    await logEvent(req, {
+      action: "developer.oauth_app_created",
+      target: "oauth.client",
+      metadata: {
+        clientIdHash: hashValue(clientId),
+        redirectUriCount: redirectUris.length,
+        scopes: allowedScopes
+      }
+    });
+
+    // The client secret is returned once. Only its hash is stored in Supabase.
+    return res.status(201).json({
+      ok: true,
+      app: publicOAuthClient(data, clientSecret)
+    });
+  } catch (error) {
+    return res.status(400).json({
+      ok: false,
+      error: error.message || "invalid_developer_app_payload"
+    });
+  }
+});
+
+app.delete("/api/developer/oauth/apps/:clientId", requireAuth, requireMfaIfEnabled, async (req, res) => {
+  const clientId = String(req.params.clientId || "");
+
+  const { data, error } = await db
+    .from("oauth_clients")
+    .update({
+      is_active: false,
+      updated_at: new Date().toISOString()
+    })
+    .eq("client_id", clientId)
+    .eq("created_by", req.user.id)
+    .select("client_id")
+    .single();
+
+  if (error || !data) {
+    return res.status(404).json({
+      ok: false,
+      error: "developer_app_not_found"
+    });
+  }
+
+  await logEvent(req, {
+    action: "developer.oauth_app_revoked",
+    target: "oauth.client",
+    metadata: {
+      clientIdHash: hashValue(clientId)
+    }
+  });
+
+  return res.json({ ok: true });
+});
+
 /* =========================
    SUPABASE OAUTH SERVER CONSENT
 ========================= */
