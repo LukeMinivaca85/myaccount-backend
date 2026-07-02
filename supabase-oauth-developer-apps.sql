@@ -48,6 +48,12 @@ create table if not exists public.oauth_authorization_codes (
   created_at timestamptz not null default now()
 );
 
+alter table public.oauth_authorization_codes
+  add column if not exists scope text not null default 'openid';
+
+alter table public.oauth_authorization_codes
+  alter column scopes set default array['openid']::text[];
+
 create index if not exists oauth_authorization_codes_client_idx
   on public.oauth_authorization_codes (client_id);
 
@@ -64,6 +70,22 @@ create table if not exists public.oauth_tokens (
   revoked_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+alter table public.oauth_tokens
+  add column if not exists token_hash text;
+
+alter table public.oauth_tokens
+  add column if not exists scope text not null default 'openid';
+
+alter table public.oauth_tokens
+  alter column token_jti_hash set default encode(gen_random_bytes(32), 'hex');
+
+alter table public.oauth_tokens
+  alter column scopes set default array['openid']::text[];
+
+create unique index if not exists oauth_tokens_token_hash_uidx
+  on public.oauth_tokens (token_hash)
+  where token_hash is not null;
 
 create index if not exists oauth_tokens_client_idx
   on public.oauth_tokens (client_id);

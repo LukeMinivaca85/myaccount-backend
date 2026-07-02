@@ -7,8 +7,13 @@ import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 import QRCode from "qrcode";
 import { Resend } from "resend";
+import WebSocket from "ws";
 
 dotenv.config();
+
+if (!globalThis.WebSocket) {
+  globalThis.WebSocket = WebSocket;
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2349,6 +2354,8 @@ app.post("/oauth/authorize/decision", requireAuth, async (req, res) => {
 
   const code = generateOpaqueToken("lk_code", 32);
   const expiresAt = new Date(Date.now() + 1000 * 60 * 5).toISOString();
+  const approvedScope = String(req.body.scope || "openid");
+  const approvedScopes = approvedScope.split(" ").filter(Boolean);
 
   const { error } = await db
     .from("oauth_authorization_codes")
@@ -2357,7 +2364,8 @@ app.post("/oauth/authorize/decision", requireAuth, async (req, res) => {
       client_id: client.client_id,
       user_id: req.user.id,
       redirect_uri: redirectUri,
-      scope: String(req.body.scope || "openid"),
+      scope: approvedScope,
+      scopes: approvedScopes,
       code_challenge: String(req.body.code_challenge || ""),
       code_challenge_method: "S256",
       expires_at: expiresAt
@@ -2458,10 +2466,12 @@ app.post("/oauth/token", async (req, res) => {
     }
 
     db.from("oauth_tokens").insert({
+      token_jti_hash: hashValue(accessToken),
       token_hash: hashValue(accessToken),
       client_id: client.client_id,
       user_id: user.id,
       scope: scopes.join(" "),
+      scopes,
       expires_at: new Date(Date.now() + 1000 * 60 * 60).toISOString()
     }).then(() => {}).catch(() => {});
 
