@@ -34,6 +34,43 @@ end $$;
 create index if not exists oauth_clients_created_by_idx
   on public.oauth_clients (created_by);
 
+create table if not exists public.oauth_authorization_codes (
+  id uuid primary key default gen_random_uuid(),
+  code_hash text not null unique,
+  client_id text not null references public.oauth_clients(client_id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  redirect_uri text not null,
+  scope text not null default 'openid',
+  code_challenge text not null,
+  code_challenge_method text not null default 'S256',
+  expires_at timestamptz not null,
+  used_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists oauth_authorization_codes_client_idx
+  on public.oauth_authorization_codes (client_id);
+
+create index if not exists oauth_authorization_codes_user_idx
+  on public.oauth_authorization_codes (user_id);
+
+create table if not exists public.oauth_tokens (
+  id uuid primary key default gen_random_uuid(),
+  token_hash text not null unique,
+  client_id text not null references public.oauth_clients(client_id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  scope text not null default 'openid',
+  expires_at timestamptz not null,
+  revoked_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists oauth_tokens_client_idx
+  on public.oauth_tokens (client_id);
+
+create index if not exists oauth_tokens_user_idx
+  on public.oauth_tokens (user_id);
+
 create table if not exists public.security_events (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references auth.users(id) on delete set null,
@@ -46,7 +83,11 @@ create table if not exists public.security_events (
 );
 
 alter table public.oauth_clients enable row level security;
+alter table public.oauth_authorization_codes enable row level security;
+alter table public.oauth_tokens enable row level security;
 alter table public.security_events enable row level security;
 
 revoke all on public.oauth_clients from anon, authenticated;
+revoke all on public.oauth_authorization_codes from anon, authenticated;
+revoke all on public.oauth_tokens from anon, authenticated;
 revoke all on public.security_events from anon, authenticated;

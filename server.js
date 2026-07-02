@@ -28,6 +28,8 @@ const API_BASE_URL =
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || ".lukintosh.com";
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY || null;
+const OIDC_ISSUER = process.env.OIDC_ISSUER || API_BASE_URL;
+const OIDC_KEY_ID = process.env.OIDC_KEY_ID || "lukintosh-auth-dev";
 
 const EMAIL_FROM =
   process.env.EMAIL_FROM || "Lukintosh Accounts <security@lukintosh.com>";
@@ -36,6 +38,9 @@ const EMAIL_REPLY_TO =
   process.env.EMAIL_REPLY_TO || "security@lukintosh.com";
 
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
+const fallbackKeyPair = crypto.generateKeyPairSync("rsa", {
+  modulusLength: 2048
+});
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY");
@@ -284,6 +289,101 @@ function normalizeRedirectUris(value) {
       parsed.hash = "";
       return parsed.toString();
     });
+}
+
+function base64UrlJson(value) {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+function getPrivateKeyPem() {
+  return process.env.OIDC_PRIVATE_KEY_PEM?.replace(/\\n/g, "\n") ||
+    fallbackKeyPair.privateKey.export({ type: "pkcs8", format: "pem" });
+}
+
+function getPublicKeyObject() {
+  const publicPem = process.env.OIDC_PUBLIC_KEY_PEM?.replace(/\\n/g, "\n");
+  return publicPem
+    ? crypto.createPublicKey(publicPem)
+    : fallbackKeyPair.publicKey;
+}
+
+function signJwt(payload, expiresInSeconds = 3600) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = {
+    alg: "RS256",
+    typ: "JWT",
+    kid: OIDC_KEY_ID
+  };
+
+  const body = {
+    iss: OIDC_ISSUER,
+    iat: now,
+    exp: now + expiresInSeconds,
+    ...payload
+  };
+
+  const signingInput = `${base64UrlJson(header)}.${base64UrlJson(body)}`;
+  const signature = crypto
+    .createSign("RSA-SHA256")
+    .update(signingInput)
+    .sign(getPrivateKeyPem(), "base64url");
+
+  return `${signingInput}.${signature}`;
+}
+
+function verifyJwt(token) {
+  const [header, payload, signature] = String(token || "").split(".");
+
+  if (!header || !payload || !signature) {
+    throw new Error("invalid_token");
+  }
+
+  const ok = crypto
+    .createVerify("RSA-SHA256")
+    .update(`${header}.${payload}`)
+    .verify(getPublicKeyObject(), signature, "base64url");
+
+  if (!ok) throw new Error("invalid_token");
+
+  const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+
+  if (claims.exp && claims.exp < Math.floor(Date.now() / 1000)) {
+    throw new Error("token_expired");
+  }
+
+  return claims;
+}
+
+function pkceS256(verifier) {
+  return crypto.createHash("sha256").update(verifier).digest("base64url");
+}
+
+function timingSafeEqualText(a, b) {
+  const left = Buffer.from(String(a || ""));
+  const right = Buffer.from(String(b || ""));
+
+  if (left.length !== right.length) return false;
+
+  return crypto.timingSafeEqual(left, right);
+}
+
+function getClientSecretFromRequest(req) {
+  const authorization = String(req.headers.authorization || "");
+
+  if (authorization.startsWith("Basic ")) {
+    const decoded = Buffer.from(authorization.slice("Basic ".length), "base64")
+      .toString("utf8");
+    const [clientId, clientSecret] = decoded.split(":");
+    return {
+      clientId,
+      clientSecret
+    };
+  }
+
+  return {
+    clientId: req.body.client_id,
+    clientSecret: req.body.client_secret
+  };
 }
 
 function hashCode(code) {
@@ -2073,6 +2173,334 @@ app.get("/api/audit-logs", requireAuth, requireMfaIfEnabled, async (req, res) =>
     ok: true,
     logs: data || []
   });
+});
+
+/* =========================
+   OAUTH 2.1 / OPENID CONNECT
+========================= */
+
+app.get("/.well-known/openid-configuration", (req, res) => {
+  return res.json({
+    issuer: OIDC_ISSUER,
+    authorization_endpoint: `${OIDC_ISSUER}/oauth/authorize`,
+    token_endpoint: `${OIDC_ISSUER}/oauth/token`,
+    userinfo_endpoint: `${OIDC_ISSUER}/oauth/userinfo`,
+    jwks_uri: `${OIDC_ISSUER}/.well-known/jwks.json`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code"],
+    code_challenge_methods_supported: ["S256"],
+    scopes_supported: DEFAULT_OAUTH_SCOPES,
+    subject_types_supported: ["public"],
+    id_token_signing_alg_values_supported: ["RS256"],
+    token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
+  });
+});
+
+app.get("/.well-known/jwks.json", (req, res) => {
+  const jwk = getPublicKeyObject().export({ format: "jwk" });
+
+  return res.json({
+    keys: [
+      {
+        ...jwk,
+        kid: OIDC_KEY_ID,
+        alg: "RS256",
+        use: "sig"
+      }
+    ]
+  });
+});
+
+async function getActiveOAuthClient(clientId) {
+  const { data, error } = await db
+    .from("oauth_clients")
+    .select("id, client_id, client_secret_hash, name, redirect_uris, allowed_scopes, is_active")
+    .eq("client_id", clientId)
+    .eq("is_active", true)
+    .single();
+
+  if (error || !data) return null;
+
+  return data;
+}
+
+app.get("/oauth/authorize", async (req, res) => {
+  try {
+    const clientId = String(req.query.client_id || "");
+    const redirectUri = String(req.query.redirect_uri || "");
+    const responseType = String(req.query.response_type || "");
+    const state = String(req.query.state || "");
+    const codeChallenge = String(req.query.code_challenge || "");
+    const codeChallengeMethod = String(req.query.code_challenge_method || "");
+    const requestedScopes = normalizeScopes(req.query.scope || "openid");
+
+    if (responseType !== "code") {
+      return res.status(400).send("response_type must be code");
+    }
+
+    if (!clientId || !redirectUri || !codeChallenge || codeChallengeMethod !== "S256") {
+      return res.status(400).send("Missing required OAuth 2.1 PKCE parameters");
+    }
+
+    const client = await getActiveOAuthClient(clientId);
+
+    if (!client) {
+      return res.status(400).send("Unknown OAuth client");
+    }
+
+    if (!client.redirect_uris?.includes(redirectUri)) {
+      return res.status(400).send("redirect_uri does not match registered callback");
+    }
+
+    const allowedScopes = new Set(client.allowed_scopes || DEFAULT_OAUTH_SCOPES);
+    const scopes = requestedScopes.filter((scope) => allowedScopes.has(scope));
+
+    if (!scopes.length) {
+      return res.status(400).send("Invalid OAuth scope");
+    }
+
+    const auth = await refreshSessionIfNeeded(req, res);
+
+    if (!auth) {
+      return res.redirect(
+        getFrontendUrl(`?returnTo=${encodeURIComponent(req.originalUrl.startsWith("http") ? req.originalUrl : getApiUrl(req.originalUrl))}`)
+      );
+    }
+
+    const scopeItems = scopes
+      .map((scope) => `<li>${escapeHtml(getScopeLabel(scope))}</li>`)
+      .join("");
+
+    return res.send(`
+      <!doctype html>
+      <html lang="pt-BR">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>Entrar com Lukintosh</title>
+          <style>
+            * { box-sizing: border-box; }
+            body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #050507; color: #f5f5f7; font-family: Inter, Arial, sans-serif; padding: 22px; }
+            .card { width: min(480px, 100%); padding: 30px; border-radius: 30px; background: rgba(255,255,255,.075); border: 1px solid rgba(255,255,255,.14); box-shadow: 0 30px 90px rgba(0,0,0,.48); }
+            .logo { width: 44px; height: 44px; border-radius: 15px; background: linear-gradient(145deg,#fff,#8ab4ff 45%,#b49cff); margin-bottom: 18px; }
+            h1 { margin: 0 0 10px; font-size: 29px; line-height: 1; letter-spacing: -1px; }
+            p { color: #b9b9c4; line-height: 1.55; margin: 10px 0; }
+            .app-box { margin: 20px 0; padding: 16px; border-radius: 20px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); }
+            .app-name { font-size: 18px; font-weight: 850; }
+            .uri { margin-top: 8px; color: #8e8e99; font-size: 12px; overflow-wrap: anywhere; }
+            ul { margin: 12px 0 20px; padding-left: 20px; color: #e5e8ff; line-height: 1.7; }
+            button { width: 100%; border: 0; border-radius: 999px; padding: 14px 18px; margin-top: 10px; font-weight: 850; cursor: pointer; font-size: 15px; }
+            .approve { background: #f5f5f7; color: #050507; }
+            .deny { background: rgba(255,255,255,.12); color: #f5f5f7; }
+          </style>
+        </head>
+        <body>
+          <main class="card">
+            <div class="logo"></div>
+            <h1>Entrar com Lukintosh</h1>
+            <p>Revise a solicitação antes de continuar.</p>
+            <div class="app-box">
+              <div class="app-name">${escapeHtml(client.name)}</div>
+              <div class="uri">${escapeHtml(redirectUri)}</div>
+            </div>
+            <p>Este app quer acessar:</p>
+            <ul>${scopeItems}</ul>
+            <form method="post" action="/oauth/authorize/decision">
+              <input type="hidden" name="decision" value="approve" />
+              <input type="hidden" name="client_id" value="${escapeHtml(clientId)}" />
+              <input type="hidden" name="redirect_uri" value="${escapeHtml(redirectUri)}" />
+              <input type="hidden" name="scope" value="${escapeHtml(scopes.join(" "))}" />
+              <input type="hidden" name="state" value="${escapeHtml(state)}" />
+              <input type="hidden" name="code_challenge" value="${escapeHtml(codeChallenge)}" />
+              <button class="approve" type="submit">Continuar com Lukintosh</button>
+            </form>
+            <form method="post" action="/oauth/authorize/decision">
+              <input type="hidden" name="decision" value="deny" />
+              <input type="hidden" name="redirect_uri" value="${escapeHtml(redirectUri)}" />
+              <input type="hidden" name="state" value="${escapeHtml(state)}" />
+              <button class="deny" type="submit">Cancelar</button>
+            </form>
+          </main>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    return res.status(400).send(escapeHtml(error.message || "invalid_authorization_request"));
+  }
+});
+
+app.post("/oauth/authorize/decision", requireAuth, async (req, res) => {
+  const redirectUri = String(req.body.redirect_uri || "");
+  const state = String(req.body.state || "");
+  const destination = new URL(redirectUri);
+
+  if (state) destination.searchParams.set("state", state);
+
+  if (req.body.decision !== "approve") {
+    destination.searchParams.set("error", "access_denied");
+    return res.redirect(destination.toString());
+  }
+
+  const client = await getActiveOAuthClient(String(req.body.client_id || ""));
+
+  if (!client || !client.redirect_uris?.includes(redirectUri)) {
+    return res.status(400).send("Invalid OAuth client or redirect_uri");
+  }
+
+  const code = generateOpaqueToken("lk_code", 32);
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 5).toISOString();
+
+  const { error } = await db
+    .from("oauth_authorization_codes")
+    .insert({
+      code_hash: hashValue(code),
+      client_id: client.client_id,
+      user_id: req.user.id,
+      redirect_uri: redirectUri,
+      scope: String(req.body.scope || "openid"),
+      code_challenge: String(req.body.code_challenge || ""),
+      code_challenge_method: "S256",
+      expires_at: expiresAt
+    });
+
+  if (error) {
+    return res.status(400).send(escapeHtml(error.message));
+  }
+
+  destination.searchParams.set("code", code);
+  return res.redirect(destination.toString());
+});
+
+app.post("/oauth/token", async (req, res) => {
+  try {
+    const grantType = String(req.body.grant_type || "");
+    const code = String(req.body.code || "");
+    const redirectUri = String(req.body.redirect_uri || "");
+    const codeVerifier = String(req.body.code_verifier || "");
+    const { clientId, clientSecret } = getClientSecretFromRequest(req);
+
+    if (grantType !== "authorization_code") {
+      return res.status(400).json({ error: "unsupported_grant_type" });
+    }
+
+    const client = await getActiveOAuthClient(String(clientId || ""));
+
+    if (!client || !client.client_secret_hash || hashValue(clientSecret) !== client.client_secret_hash) {
+      return res.status(401).json({ error: "invalid_client" });
+    }
+
+    const { data: authCode, error } = await db
+      .from("oauth_authorization_codes")
+      .select("*")
+      .eq("code_hash", hashValue(code))
+      .eq("client_id", client.client_id)
+      .is("used_at", null)
+      .single();
+
+    if (error || !authCode) {
+      return res.status(400).json({ error: "invalid_grant" });
+    }
+
+    if (new Date(authCode.expires_at).getTime() <= Date.now()) {
+      return res.status(400).json({ error: "invalid_grant", error_description: "authorization_code_expired" });
+    }
+
+    if (authCode.redirect_uri !== redirectUri) {
+      return res.status(400).json({ error: "invalid_grant", error_description: "redirect_uri_mismatch" });
+    }
+
+    if (!timingSafeEqualText(pkceS256(codeVerifier), authCode.code_challenge)) {
+      return res.status(400).json({ error: "invalid_grant", error_description: "pkce_verification_failed" });
+    }
+
+    const { error: consumeError } = await db
+      .from("oauth_authorization_codes")
+      .update({ used_at: new Date().toISOString() })
+      .eq("id", authCode.id)
+      .is("used_at", null);
+
+    if (consumeError) {
+      return res.status(400).json({ error: "invalid_grant" });
+    }
+
+    const { data: userData } = await db.auth.admin.getUserById(authCode.user_id);
+    const user = userData?.user;
+
+    if (!user) {
+      return res.status(400).json({ error: "invalid_grant" });
+    }
+
+    const scopes = String(authCode.scope || "openid").split(" ").filter(Boolean);
+    const accessToken = signJwt({
+      sub: user.id,
+      aud: client.client_id,
+      client_id: client.client_id,
+      scope: scopes.join(" "),
+      token_use: "access"
+    });
+
+    const response = {
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: 3600,
+      scope: scopes.join(" ")
+    };
+
+    if (scopes.includes("openid")) {
+      response.id_token = signJwt({
+        sub: user.id,
+        aud: client.client_id,
+        email: scopes.includes("email") ? user.email : undefined,
+        name: scopes.includes("profile") ? publicUser(user).displayName : undefined,
+        picture: scopes.includes("profile") ? publicUser(user).avatarUrl : undefined,
+        token_use: "id"
+      });
+    }
+
+    db.from("oauth_tokens").insert({
+      token_hash: hashValue(accessToken),
+      client_id: client.client_id,
+      user_id: user.id,
+      scope: scopes.join(" "),
+      expires_at: new Date(Date.now() + 1000 * 60 * 60).toISOString()
+    }).then(() => {}).catch(() => {});
+
+    return res.json(response);
+  } catch (error) {
+    return res.status(400).json({
+      error: "invalid_request",
+      error_description: error.message
+    });
+  }
+});
+
+app.get("/oauth/userinfo", async (req, res) => {
+  try {
+    const authorization = String(req.headers.authorization || "");
+    const token = authorization.startsWith("Bearer ")
+      ? authorization.slice("Bearer ".length)
+      : "";
+    const claims = verifyJwt(token);
+    const scopes = String(claims.scope || "").split(" ");
+
+    const { data } = await db.auth.admin.getUserById(claims.sub);
+    const user = data?.user;
+
+    if (!user) {
+      return res.status(401).json({ error: "invalid_token" });
+    }
+
+    const profile = publicUser(user);
+
+    return res.json({
+      sub: user.id,
+      name: scopes.includes("profile") ? profile.displayName : undefined,
+      email: scopes.includes("email") ? user.email : undefined,
+      picture: scopes.includes("profile") ? profile.avatarUrl : undefined
+    });
+  } catch (error) {
+    return res.status(401).json({ error: "invalid_token" });
+  }
 });
 
 /* =========================
