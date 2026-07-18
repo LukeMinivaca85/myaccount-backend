@@ -1,8 +1,8 @@
 # My Account backend
 
-## Stripe Identity
+## Veriff Identity
 
-The backend creates Stripe Identity VerificationSessions only for the authenticated Supabase user. The browser receives only the transient VerificationSession client secret needed by Stripe.js, never `STRIPE_SECRET_KEY`, and never stores that client secret.
+The backend creates Veriff verification sessions only for the authenticated Supabase user. The browser receives only the temporary Veriff session URL, never the Veriff API key or shared secret, and the application does not store images, documents, videos, or biometric data.
 
 Identity state is stored in the user's Supabase metadata under `identity_verification`, limited to:
 
@@ -14,11 +14,11 @@ Identity state is stored in the user's Supabase metadata under `identity_verific
 
 Documents, images, biometric data, verification reports, and client secrets are not stored or logged.
 
-Required backend variables are listed in `.env.example`. Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` only in the backend deployment environment. `STRIPE_PUBLISHABLE_KEY` is safe to return to the authenticated frontend, but it must also come from the environment.
+Required backend variables are listed in `.env.example`. Set `VERIFF_API_KEY` and `VERIFF_SHARED_SECRET` only in the backend deployment environment. `VERIFF_BASE_URL` should point to the base URL provided for the Veriff integration.
 
-Configure a Stripe webhook endpoint at:
+Configure a Veriff webhook endpoint at:
 
-`https://auth.lukintosh.com/api/webhooks/stripe/identity`
+`https://auth.lukintosh.com/api/webhooks/veriff/identity`
 
 Subscribe it to these Identity events:
 
@@ -27,4 +27,4 @@ Subscribe it to these Identity events:
 - `identity.verification_session.canceled`
 - `identity.verification_session.requires_input`
 
-The endpoint verifies the `Stripe-Signature` header, fetches the session from Stripe, and rejects events whose session ID is not already linked to the user. The authenticated status endpoint also rechecks Stripe, so a browser redirect is never treated as proof of verification.
+The endpoint verifies `X-AUTH-CLIENT` and `X-HMAC-SIGNATURE`, rejects events whose session ID is not already linked to the authenticated user, and stores only the provider, session ID, status, and timestamps. The authenticated status endpoint also rechecks Veriff, so a browser callback is never treated as proof of verification.
