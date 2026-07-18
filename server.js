@@ -39,6 +39,8 @@ const DIDIT_BASE_URL = process.env.DIDIT_BASE_URL || "https://verification.didit
 const DIDIT_API_KEY = process.env.DIDIT_API_KEY || null;
 const DIDIT_FACE_WORKFLOW_ID = process.env.DIDIT_FACE_WORKFLOW_ID || process.env.DIDIT_WORKFLOW_ID || null;
 const DIDIT_DOCUMENT_WORKFLOW_ID = process.env.DIDIT_DOCUMENT_WORKFLOW_ID || null;
+const DIDIT_AGE_WORKFLOW_ID = process.env.DIDIT_AGE_WORKFLOW_ID || null;
+const DIDIT_ADAPTIVE_AGE_WORKFLOW_ID = process.env.DIDIT_ADAPTIVE_AGE_WORKFLOW_ID || null;
 const DIDIT_WEBHOOK_SECRET = process.env.DIDIT_WEBHOOK_SECRET || null;
 
 const EMAIL_FROM =
@@ -790,7 +792,7 @@ function getIdentityVerification(user, type = "face") {
     status: value.status || "not_started",
     verified: value.status === "verified",
     provider: value.provider || null,
-    type: value.verification_type || value.type || "face",
+    type: value.verification_type || value.type || type,
     sessionId: value.session_id || value.sessionId || null,
     createdAt: value.created_at || value.createdAt || null,
     completedAt: value.completed_at || value.completedAt || null,
@@ -801,7 +803,9 @@ function getIdentityVerification(user, type = "face") {
 function getIdentityVerifications(user) {
   return {
     face: getIdentityVerification(user, "face"),
-    document: getIdentityVerification(user, "document")
+    document: getIdentityVerification(user, "document"),
+    age: getIdentityVerification(user, "age"),
+    adaptive_age: getIdentityVerification(user, "adaptive_age")
   };
 }
 
@@ -2249,7 +2253,10 @@ app.get("/api/identity/status", requireAuth, async (req, res) => {
     }
 
     const currentUser = currentData.user || req.user;
-    const type = req.query.type === "document" ? "document" : "face";
+    const requestedType = String(req.query.type || "face");
+    const type = ["face", "document", "age", "adaptive_age"].includes(requestedType)
+      ? requestedType
+      : "face";
     let identityVerification = getIdentityVerification(currentUser, type);
 
     if (
@@ -2273,7 +2280,7 @@ app.get("/api/identity/status", requireAuth, async (req, res) => {
       ok: true,
       enabled: Boolean(
         DIDIT_API_KEY &&
-        (type === "document" ? DIDIT_DOCUMENT_WORKFLOW_ID : DIDIT_FACE_WORKFLOW_ID) &&
+        getDiditWorkflowId(type) &&
         DIDIT_WEBHOOK_SECRET &&
         SUPABASE_SERVICE_ROLE_KEY
       ),
@@ -2289,11 +2296,18 @@ app.get("/api/identity/status", requireAuth, async (req, res) => {
   }
 });
 
+function getDiditWorkflowId(type) {
+  return {
+    face: DIDIT_FACE_WORKFLOW_ID,
+    document: DIDIT_DOCUMENT_WORKFLOW_ID,
+    age: DIDIT_AGE_WORKFLOW_ID,
+    adaptive_age: DIDIT_ADAPTIVE_AGE_WORKFLOW_ID
+  }[type] || null;
+}
+
 async function startDiditIdentity(req, res, type) {
   try {
-    const workflowId = type === "document"
-      ? DIDIT_DOCUMENT_WORKFLOW_ID
-      : DIDIT_FACE_WORKFLOW_ID;
+    const workflowId = getDiditWorkflowId(type);
 
     if (!DIDIT_API_KEY || !workflowId) {
       return res.status(503).json({
@@ -2381,7 +2395,11 @@ async function startDiditIdentity(req, res, type) {
 }
 
 app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, res) => {
-  return startDiditIdentity(req, res, req.body?.type === "document" ? "document" : "face");
+  const requestedType = String(req.body?.type || "face");
+  const type = ["face", "document", "age", "adaptive_age"].includes(requestedType)
+    ? requestedType
+    : "face";
+  return startDiditIdentity(req, res, type);
 });
 
 app.post("/api/identity/start-face", requireAuth, requireMfaIfEnabled, async (req, res) => {
@@ -2390,6 +2408,14 @@ app.post("/api/identity/start-face", requireAuth, requireMfaIfEnabled, async (re
 
 app.post("/api/identity/start-document", requireAuth, requireMfaIfEnabled, async (req, res) => {
   return startDiditIdentity(req, res, "document");
+});
+
+app.post("/api/identity/start-age", requireAuth, requireMfaIfEnabled, async (req, res) => {
+  return startDiditIdentity(req, res, "age");
+});
+
+app.post("/api/identity/start-adaptive-age", requireAuth, requireMfaIfEnabled, async (req, res) => {
+  return startDiditIdentity(req, res, "adaptive_age");
 });
 
 app.get("/api/account-status", requireAuth, async (req, res) => {
