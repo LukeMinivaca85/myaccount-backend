@@ -2337,12 +2337,12 @@ async function startDiditIdentity(req, res, type) {
       const workflowError = Array.isArray(session.workflow_id)
         ? session.workflow_id[0]
         : session.workflow_id;
-      const error = new Error(
+      const providerError =
         session.detail ||
         session.message ||
         workflowError ||
-        "didit_session_creation_failed"
-      );
+        `didit_session_creation_failed_${response.status || "unknown"}`;
+      const error = new Error(providerError);
       error.status = response.status || 502;
       throw error;
     }
@@ -2374,7 +2374,8 @@ async function startDiditIdentity(req, res, type) {
 
     return res.status(error.status || 500).json({
       ok: false,
-      error: error.message || "identity_start_failed"
+      error: error.message || "identity_start_failed",
+      message: error.message || "identity_start_failed"
     });
   }
 }
