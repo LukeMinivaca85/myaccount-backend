@@ -37,7 +37,8 @@ const OIDC_ISSUER = process.env.OIDC_ISSUER || API_BASE_URL;
 const OIDC_KEY_ID = process.env.OIDC_KEY_ID || "lukintosh-auth-dev";
 const DIDIT_BASE_URL = process.env.DIDIT_BASE_URL || "https://verification.didit.me";
 const DIDIT_API_KEY = process.env.DIDIT_API_KEY || null;
-const DIDIT_WORKFLOW_ID = process.env.DIDIT_WORKFLOW_ID || null;
+const DIDIT_FACE_WORKFLOW_ID = process.env.DIDIT_FACE_WORKFLOW_ID || process.env.DIDIT_WORKFLOW_ID || null;
+const DIDIT_DOCUMENT_WORKFLOW_ID = process.env.DIDIT_DOCUMENT_WORKFLOW_ID || null;
 const DIDIT_WEBHOOK_SECRET = process.env.DIDIT_WEBHOOK_SECRET || null;
 
 const EMAIL_FROM =
@@ -232,8 +233,11 @@ app.post(
       const { data: currentData, error: currentError } = await db.auth.admin.getUserById(userId);
       if (currentError || !currentData.user) return res.status(404).send("User not found");
 
-      const currentIdentity = getIdentityVerification(currentData.user);
-      if (currentIdentity.sessionId !== sessionId) return res.status(409).send("Session does not belong to user");
+      const identityVerifications = getIdentityVerifications(currentData.user);
+      const currentIdentity = Object.values(identityVerifications).find(
+        (verification) => verification.sessionId === sessionId
+      );
+      if (!currentIdentity) return res.status(409).send("Session does not belong to user");
       if (currentIdentity.status === "verified" && status !== "verified") return res.json({ received: true });
 
       const eventDate = event.created_at
@@ -241,6 +245,7 @@ app.post(
         : new Date().toISOString();
       await updateIdentityVerification(userId, {
         provider: "didit",
+        type: event.metadata?.verification_type || currentIdentity.type,
         status,
         sessionId,
         createdAt: currentIdentity.createdAt,
@@ -758,29 +763,45 @@ function publicUser(user) {
   };
 }
 
-function getIdentityVerification(user) {
-  const value = user?.user_metadata?.identity_verification;
+function emptyIdentityVerification(type = "face") {
+  return {
+    status: "not_started",
+    verified: false,
+    provider: null,
+    type,
+    sessionId: null,
+    createdAt: null,
+    completedAt: null,
+    lastUpdatedAt: null,
+  };
+}
+
+function getIdentityVerification(user, type = "face") {
+  const metadata = user?.user_metadata || {};
+  const storedVerifications = metadata.identity_verifications;
+  const legacyValue = metadata.identity_verification;
+  const value = storedVerifications?.[type] || (type === "face" ? legacyValue : null);
 
   if (!value || typeof value !== "object") {
-    return {
-      status: "not_started",
-      verified: false,
-      provider: null,
-      sessionId: null,
-      createdAt: null,
-      completedAt: null,
-      lastUpdatedAt: null,
-    };
+    return emptyIdentityVerification(type);
   }
 
   return {
     status: value.status || "not_started",
     verified: value.status === "verified",
     provider: value.provider || null,
+    type: value.verification_type || value.type || "face",
     sessionId: value.session_id || value.sessionId || null,
     createdAt: value.created_at || value.createdAt || null,
     completedAt: value.completed_at || value.completedAt || null,
     lastUpdatedAt: value.last_updated_at || value.lastUpdatedAt || null
+  };
+}
+
+function getIdentityVerifications(user) {
+  return {
+    face: getIdentityVerification(user, "face"),
+    document: getIdentityVerification(user, "document")
   };
 }
 
@@ -795,17 +816,35 @@ async function updateIdentityVerification(userId, verification) {
   if (currentError) throw currentError;
 
   const currentMetadata = currentData.user?.user_metadata || {};
+  const type = verification.type || verification.verificationType || "face";
+  const currentVerifications = getIdentityVerifications(currentData.user);
+  const storedVerification = {
+    provider: verification.provider || "didit",
+    verification_type: type,
+    status: verification.status,
+    session_id: verification.sessionId,
+    created_at: verification.createdAt || null,
+    completed_at: verification.completedAt || null,
+    last_updated_at: verification.lastUpdatedAt || new Date().toISOString(),
+  };
 
   const { data, error } = await db.auth.admin.updateUserById(userId, {
     user_metadata: {
       ...currentMetadata,
-      identity_verification: {
-        provider: verification.provider || "didit",
-        status: verification.status,
-        session_id: verification.sessionId,
-        created_at: verification.createdAt || null,
-        completed_at: verification.completedAt || null,
-        last_updated_at: verification.lastUpdatedAt || new Date().toISOString(),
+      identity_verification: type === "face"
+        ? storedVerification
+        : currentMetadata.identity_verification || {
+            provider: currentVerifications.face.provider,
+            verification_type: "face",
+            status: currentVerifications.face.status,
+            session_id: currentVerifications.face.sessionId,
+            created_at: currentVerifications.face.createdAt,
+            completed_at: currentVerifications.face.completedAt,
+            last_updated_at: currentVerifications.face.lastUpdatedAt
+          },
+      identity_verifications: {
+        ...currentMetadata.identity_verifications,
+        [type]: storedVerification
       }
     }
   });
@@ -2210,7 +2249,8 @@ app.get("/api/identity/status", requireAuth, async (req, res) => {
     }
 
     const currentUser = currentData.user || req.user;
-    let identityVerification = getIdentityVerification(currentUser);
+    const type = req.query.type === "document" ? "document" : "face";
+    let identityVerification = getIdentityVerification(currentUser, type);
 
     if (
       DIDIT_API_KEY &&
@@ -2222,14 +2262,17 @@ app.get("/api/identity/status", requireAuth, async (req, res) => {
         `/v3/session/${encodeURIComponent(identityVerification.sessionId)}/decision/`
       );
 
-      identityVerification = mapDiditSession(decision);
+      identityVerification = {
+        ...mapDiditSession(decision),
+        type
+      };
       await updateIdentityVerification(req.user.id, identityVerification);
     }
 
     return res.json({
       ok: true,
       enabled: Boolean(
-        DIDIT_API_KEY && DIDIT_WORKFLOW_ID && DIDIT_WEBHOOK_SECRET && SUPABASE_SERVICE_ROLE_KEY
+        DIDIT_API_KEY && (DIDIT_FACE_WORKFLOW_ID || DIDIT_DOCUMENT_WORKFLOW_ID) && DIDIT_WEBHOOK_SECRET && SUPABASE_SERVICE_ROLE_KEY
       ),
       identityVerification
     });
@@ -2243,9 +2286,13 @@ app.get("/api/identity/status", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, res) => {
+async function startDiditIdentity(req, res, type) {
   try {
-    if (!DIDIT_API_KEY || !DIDIT_WORKFLOW_ID) {
+    const workflowId = type === "document"
+      ? DIDIT_DOCUMENT_WORKFLOW_ID
+      : DIDIT_FACE_WORKFLOW_ID;
+
+    if (!DIDIT_API_KEY || !workflowId) {
       return res.status(503).json({
         ok: false,
         error: "didit_identity_not_configured"
@@ -2260,11 +2307,12 @@ app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, re
     }
 
     const body = JSON.stringify({
-      workflow_id: DIDIT_WORKFLOW_ID,
+      workflow_id: workflowId,
       vendor_data: req.user.id,
       callback: getFrontendUrl("?identity=return"),
       callback_method: "both",
-      language: "pt"
+      language: "pt",
+      metadata: { verification_type: type }
     });
     const response = await fetch(`${DIDIT_BASE_URL}/v3/session/`, {
       method: "POST",
@@ -2282,7 +2330,10 @@ app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, re
       throw error;
     }
 
-    const identityVerification = mapDiditSession(session);
+    const identityVerification = {
+      ...mapDiditSession(session),
+      type
+    };
     const updatedUser = await updateIdentityVerification(req.user.id, identityVerification);
 
     await logEvent(req, {
@@ -2290,7 +2341,8 @@ app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, re
       target: "didit.identity.verification_session",
       metadata: {
         sessionId: identityVerification.sessionId,
-        status: identityVerification.status
+        status: identityVerification.status,
+        type
       }
     });
 
@@ -2308,6 +2360,18 @@ app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, re
       error: error.message || "identity_start_failed"
     });
   }
+}
+
+app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, res) => {
+  return startDiditIdentity(req, res, req.body?.type === "document" ? "document" : "face");
+});
+
+app.post("/api/identity/start-face", requireAuth, requireMfaIfEnabled, async (req, res) => {
+  return startDiditIdentity(req, res, "face");
+});
+
+app.post("/api/identity/start-document", requireAuth, requireMfaIfEnabled, async (req, res) => {
+  return startDiditIdentity(req, res, "document");
 });
 
 app.get("/api/account-status", requireAuth, async (req, res) => {
@@ -2334,7 +2398,9 @@ app.get("/api/account-status", requireAuth, async (req, res) => {
 
   const securityChecks = {
     emailVerified: Boolean(req.user.email_confirmed_at),
-    identityVerified: Boolean(identityVerification.verified),
+    identityVerified: Boolean(
+      identityVerification.verified && identityVerification.type === "face"
+    ),
     mfaEnabled: Boolean(mfa.enabled),
     sessionActive: true,
     hasDeviceRecord: Number(deviceCount || 0) > 0

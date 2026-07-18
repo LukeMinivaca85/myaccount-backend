@@ -14,7 +14,7 @@ Identity state is stored in the user's Supabase metadata under `identity_verific
 
 Documents, images, biometric data, verification reports, and client secrets are not stored or logged.
 
-Required backend variables are listed in `.env.example`. Set `DIDIT_API_KEY`, `DIDIT_WORKFLOW_ID` and `DIDIT_WEBHOOK_SECRET` only in the backend deployment environment. `DIDIT_BASE_URL` should remain `https://verification.didit.me` unless Didit provides another endpoint for the account.
+Required backend variables are listed in `.env.example`. Set `DIDIT_API_KEY`, `DIDIT_FACE_WORKFLOW_ID`, `DIDIT_DOCUMENT_WORKFLOW_ID` and `DIDIT_WEBHOOK_SECRET` only in the backend deployment environment. `DIDIT_BASE_URL` should remain `https://verification.didit.me` unless Didit provides another endpoint for the account.
 
 Configure a Didit webhook endpoint at:
 
