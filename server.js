@@ -35,6 +35,10 @@ const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || ".lukintosh.com";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || null;
 const OIDC_ISSUER = process.env.OIDC_ISSUER || API_BASE_URL;
 const OIDC_KEY_ID = process.env.OIDC_KEY_ID || "lukintosh-auth-dev";
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || null;
+const STRIPE_PUBLISHABLE_KEY = process.env.STRIPE_PUBLISHABLE_KEY || null;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || null;
+const STRIPE_API_VERSION = process.env.STRIPE_API_VERSION || "2026-02-25.clover";
 
 const EMAIL_FROM =
   process.env.EMAIL_FROM || "Lukintosh Accounts <security@lukintosh.com>";
@@ -139,6 +143,126 @@ app.use(
   helmet({
     contentSecurityPolicy: false
   })
+);
+
+function parseStripeSignatureHeader(header) {
+  const values = new Map();
+
+  for (const item of String(header || "").split(",")) {
+    const [key, value] = item.split("=", 2);
+    if (key && value) values.set(key, value);
+  }
+
+  return values;
+}
+
+function verifyStripeWebhookSignature(payload, header) {
+  if (!STRIPE_WEBHOOK_SECRET) return false;
+
+  const values = parseStripeSignatureHeader(header);
+  const timestamp = Number(values.get("t"));
+  const signature = values.get("v1");
+
+  if (!timestamp || !signature) return false;
+  if (Math.abs(Date.now() / 1000 - timestamp) > 300) return false;
+
+  const expected = crypto
+    .createHmac("sha256", STRIPE_WEBHOOK_SECRET)
+    .update(`${timestamp}.${payload}`)
+    .digest("hex");
+
+  const expectedBuffer = Buffer.from(expected, "hex");
+  const signatureBuffer = Buffer.from(signature, "hex");
+
+  return (
+    expectedBuffer.length === signatureBuffer.length &&
+    crypto.timingSafeEqual(expectedBuffer, signatureBuffer)
+  );
+}
+
+app.post(
+  "/api/webhooks/stripe/identity",
+  express.raw({ type: "application/json", limit: "500kb" }),
+  async (req, res) => {
+    if (!STRIPE_WEBHOOK_SECRET) {
+      return res.status(503).send("Webhook not configured");
+    }
+
+    const payload = Buffer.isBuffer(req.body) ? req.body : Buffer.from("");
+    const signature = req.headers["stripe-signature"];
+
+    if (!verifyStripeWebhookSignature(payload.toString("utf8"), signature)) {
+      return res.status(400).send("Invalid signature");
+    }
+
+    let event;
+    try {
+      event = JSON.parse(payload.toString("utf8"));
+    } catch {
+      return res.status(400).send("Invalid payload");
+    }
+
+    const statusByEvent = {
+      "identity.verification_session.processing": "processing",
+      "identity.verification_session.verified": "verified",
+      "identity.verification_session.canceled": "canceled",
+      "identity.verification_session.requires_input": "failed"
+    };
+    const status = statusByEvent[event.type];
+
+    if (!status) return res.json({ received: true });
+
+    try {
+      const eventSession = event.data?.object || {};
+      const sessionId = eventSession.id;
+      const userId =
+        eventSession.metadata?.user_id || eventSession.client_reference_id;
+
+      if (!sessionId || !userId) {
+        return res.json({ received: true });
+      }
+
+      const session = await stripeRequest(
+        `/v1/identity/verification_sessions/${encodeURIComponent(sessionId)}`
+      );
+      const currentStatus =
+        status === "failed" ? "failed" : session.status || status;
+      const { data: currentData, error: currentError } =
+        await db.auth.admin.getUserById(userId);
+
+      if (currentError || !currentData.user) {
+        return res.status(404).send("User not found");
+      }
+
+      const currentIdentity = getIdentityVerification(currentData.user);
+      if (currentIdentity.sessionId !== sessionId) {
+        return res.status(409).send("Session does not belong to user");
+      }
+
+      if (currentIdentity.status === "verified" && currentStatus !== "verified") {
+        return res.json({ received: true });
+      }
+
+      await updateIdentityVerification(userId, {
+        status: currentStatus,
+        sessionId,
+        createdAt: event.created
+          ? new Date(event.created * 1000).toISOString()
+          : currentIdentity.createdAt,
+        lastUpdatedAt: event.created
+          ? new Date(event.created * 1000).toISOString()
+          : new Date().toISOString(),
+        completedAt:
+          currentStatus === "verified" && event.created
+            ? new Date(event.created * 1000).toISOString()
+            : currentIdentity.completedAt
+      });
+
+      return res.json({ received: true });
+    } catch {
+      return res.status(500).send("Webhook processing failed");
+    }
+  }
 );
 
 app.use(express.json({ limit: "500kb" }));
@@ -598,6 +722,7 @@ function publicUser(user) {
   const providers = user.app_metadata?.providers || [];
   const mainProvider = user.app_metadata?.provider || providers[0] || "email";
   const lastUsedProvider = getLastUsedProvider(user);
+  const identityVerification = getIdentityVerification(user);
 
   return {
     id: user.id,
@@ -635,9 +760,114 @@ function publicUser(user) {
         }))
       : [],
 
+    identityVerification,
+
     createdAt: user.created_at,
     lastSignInAt: user.last_sign_in_at,
     emailConfirmedAt: user.email_confirmed_at
+  };
+}
+
+function getIdentityVerification(user) {
+  const value = user?.user_metadata?.identity_verification;
+
+  if (!value || typeof value !== "object") {
+    return {
+      status: "not_started",
+      verified: false,
+      sessionId: null,
+      createdAt: null,
+      completedAt: null,
+      lastUpdatedAt: null,
+    };
+  }
+
+  return {
+    status: value.status || "not_started",
+    verified: value.status === "verified",
+    sessionId: value.session_id || value.sessionId || null,
+    createdAt: value.created_at || value.createdAt || null,
+    completedAt: value.completed_at || value.completedAt || null,
+    lastUpdatedAt: value.last_updated_at || value.lastUpdatedAt || null
+  };
+}
+
+async function updateIdentityVerification(userId, verification) {
+  if (!SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error("supabase_service_role_required");
+  }
+
+  const { data: currentData, error: currentError } =
+    await db.auth.admin.getUserById(userId);
+
+  if (currentError) throw currentError;
+
+  const currentMetadata = currentData.user?.user_metadata || {};
+
+  const { data, error } = await db.auth.admin.updateUserById(userId, {
+    user_metadata: {
+      ...currentMetadata,
+      identity_verification: {
+        status: verification.status,
+        session_id: verification.sessionId,
+        created_at: verification.createdAt || null,
+        completed_at: verification.completedAt || null,
+        last_updated_at: verification.lastUpdatedAt || new Date().toISOString(),
+      }
+    }
+  });
+
+  if (error) throw error;
+
+  return data.user;
+}
+
+async function stripeRequest(path, options = {}) {
+  if (!STRIPE_SECRET_KEY) {
+    const error = new Error("stripe_identity_not_configured");
+    error.status = 503;
+    throw error;
+  }
+
+  const response = await fetch(`https://api.stripe.com${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${STRIPE_SECRET_KEY}:`).toString("base64")}`,
+      "Stripe-Version": STRIPE_API_VERSION,
+      ...(options.headers || {})
+    }
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const error = new Error(data.error?.message || "stripe_request_failed");
+    error.status = response.status;
+    error.payload = data;
+    throw error;
+  }
+
+  return data;
+}
+
+function mapStripeVerificationSession(session) {
+  const status =
+    session.status === "requires_input" && session.last_error
+      ? "failed"
+      : session.status || "requires_input";
+
+  return {
+    status,
+    verified: status === "verified",
+    sessionId: session.id || null,
+    createdAt: session.created
+      ? new Date(session.created * 1000).toISOString()
+      : null,
+    completedAt:
+      status === "verified" && session.last_verification_report?.created
+        ? new Date(session.last_verification_report.created * 1000).toISOString()
+        : null,
+    lastUpdatedAt: new Date().toISOString()
   };
 }
 
@@ -1976,6 +2206,122 @@ app.patch("/api/password", requireAuth, requireMfaIfEnabled, async (req, res) =>
   }
 });
 
+app.get("/api/identity/status", requireAuth, async (req, res) => {
+  try {
+    const { data: currentData, error: currentError } =
+      SUPABASE_SERVICE_ROLE_KEY
+        ? await db.auth.admin.getUserById(req.user.id)
+        : { data: { user: req.user }, error: null };
+
+    if (currentError) {
+      return res.status(400).json({
+        ok: false,
+        error: currentError.message
+      });
+    }
+
+    const currentUser = currentData.user || req.user;
+    let identityVerification = getIdentityVerification(currentUser);
+
+    if (
+      STRIPE_SECRET_KEY &&
+      identityVerification.sessionId &&
+      identityVerification.status !== "verified" &&
+      identityVerification.status !== "canceled"
+    ) {
+      const session = await stripeRequest(
+        `/v1/identity/verification_sessions/${encodeURIComponent(identityVerification.sessionId)}?expand[]=last_verification_report`
+      );
+
+      identityVerification = mapStripeVerificationSession(session);
+      await updateIdentityVerification(req.user.id, identityVerification);
+    }
+
+    return res.json({
+      ok: true,
+      enabled: Boolean(
+        STRIPE_SECRET_KEY && STRIPE_PUBLISHABLE_KEY && SUPABASE_SERVICE_ROLE_KEY
+      ),
+      publishableKey: STRIPE_PUBLISHABLE_KEY,
+      identityVerification
+    });
+  } catch (error) {
+    console.error("Identity status error");
+
+    return res.status(error.status || 500).json({
+      ok: false,
+      error: error.message || "identity_status_failed"
+    });
+  }
+});
+
+app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, res) => {
+  try {
+    if (!STRIPE_SECRET_KEY) {
+      return res.status(503).json({
+        ok: false,
+        error: "stripe_identity_not_configured"
+      });
+    }
+
+    if (!SUPABASE_SERVICE_ROLE_KEY) {
+      return res.status(503).json({
+        ok: false,
+        error: "supabase_service_role_required"
+      });
+    }
+
+    const body = new URLSearchParams();
+    body.set("type", "document");
+    body.set("client_reference_id", req.user.id);
+    body.set("metadata[user_id]", req.user.id);
+    body.set("metadata[email_hash]", hashValue(req.user.email));
+    body.set("options[document][require_live_capture]", "true");
+    body.set("options[document][require_matching_selfie]", "true");
+    body.set("return_url", getFrontendUrl("?identity=return"));
+
+    if (req.user.email) {
+      body.set("provided_details[email]", req.user.email);
+    }
+
+    const session = await stripeRequest("/v1/identity/verification_sessions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body
+    });
+
+    const identityVerification = mapStripeVerificationSession(session);
+    const updatedUser = await updateIdentityVerification(req.user.id, identityVerification);
+
+    await logEvent(req, {
+      action: "identity.verification_started",
+      target: "stripe.identity.verification_session",
+      metadata: {
+        sessionId: identityVerification.sessionId,
+        status: identityVerification.status
+      }
+    });
+
+    return res.json({
+      ok: true,
+      url: session.url,
+      clientSecret: session.client_secret || null,
+      publishableKey: STRIPE_PUBLISHABLE_KEY,
+      identityVerification,
+      user: publicUser(updatedUser)
+    });
+  } catch (error) {
+    console.error("Identity start error");
+
+    return res.status(error.status || 500).json({
+      ok: false,
+      error: error.message || "identity_start_failed"
+    });
+  }
+});
+
 app.get("/api/account-status", requireAuth, async (req, res) => {
   const { count: sessionCount } = await db
     .from("account_sessions")
@@ -1996,8 +2342,11 @@ app.get("/api/account-status", requireAuth, async (req, res) => {
     factors: []
   }));
 
+  const identityVerification = getIdentityVerification(req.user);
+
   const securityChecks = {
     emailVerified: Boolean(req.user.email_confirmed_at),
+    identityVerified: Boolean(identityVerification.verified),
     mfaEnabled: Boolean(mfa.enabled),
     sessionActive: true,
     hasDeviceRecord: Number(deviceCount || 0) > 0
@@ -2012,6 +2361,7 @@ app.get("/api/account-status", requireAuth, async (req, res) => {
       verified: Boolean(req.user.email_confirmed_at),
       provider: req.user.app_metadata?.provider || "email",
       providers: req.user.app_metadata?.providers || [],
+      identityVerification,
       mfa,
       twoFactorEnabled: mfa.enabled,
       activeSessions: sessionCount || 0,
