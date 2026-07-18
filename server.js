@@ -35,10 +35,9 @@ const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || ".lukintosh.com";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || null;
 const OIDC_ISSUER = process.env.OIDC_ISSUER || API_BASE_URL;
 const OIDC_KEY_ID = process.env.OIDC_KEY_ID || "lukintosh-auth-dev";
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || null;
-const STRIPE_PUBLISHABLE_KEY = process.env.STRIPE_PUBLISHABLE_KEY || null;
-const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || null;
-const STRIPE_API_VERSION = process.env.STRIPE_API_VERSION || "2026-02-25.clover";
+const VERIFF_BASE_URL = process.env.VERIFF_BASE_URL || "https://stationapi.veriff.com";
+const VERIFF_API_KEY = process.env.VERIFF_API_KEY || null;
+const VERIFF_SHARED_SECRET = process.env.VERIFF_SHARED_SECRET || null;
 
 const EMAIL_FROM =
   process.env.EMAIL_FROM || "Lukintosh Accounts <security@lukintosh.com>";
@@ -145,34 +144,16 @@ app.use(
   })
 );
 
-function parseStripeSignatureHeader(header) {
-  const values = new Map();
-
-  for (const item of String(header || "").split(",")) {
-    const [key, value] = item.split("=", 2);
-    if (key && value) values.set(key, value);
-  }
-
-  return values;
-}
-
-function verifyStripeWebhookSignature(payload, header) {
-  if (!STRIPE_WEBHOOK_SECRET) return false;
-
-  const values = parseStripeSignatureHeader(header);
-  const timestamp = Number(values.get("t"));
-  const signature = values.get("v1");
-
-  if (!timestamp || !signature) return false;
-  if (Math.abs(Date.now() / 1000 - timestamp) > 300) return false;
+function verifyVeriffSignature(payload, signature) {
+  if (!VERIFF_SHARED_SECRET || !signature) return false;
 
   const expected = crypto
-    .createHmac("sha256", STRIPE_WEBHOOK_SECRET)
-    .update(`${timestamp}.${payload}`)
+    .createHmac("sha256", VERIFF_SHARED_SECRET)
+    .update(payload)
     .digest("hex");
 
   const expectedBuffer = Buffer.from(expected, "hex");
-  const signatureBuffer = Buffer.from(signature, "hex");
+  const signatureBuffer = Buffer.from(String(signature), "hex");
 
   return (
     expectedBuffer.length === signatureBuffer.length &&
@@ -180,18 +161,58 @@ function verifyStripeWebhookSignature(payload, header) {
   );
 }
 
+function getVeriffSessionId(payload) {
+  return (
+    payload?.verification?.id ||
+    payload?.sessionId ||
+    payload?.id ||
+    null
+  );
+}
+
+function getVeriffUserId(payload) {
+  return (
+    payload?.verification?.vendorData ||
+    payload?.verification?.endUserId ||
+    payload?.vendorData ||
+    payload?.endUserId ||
+    null
+  );
+}
+
+function mapVeriffStatus(payload) {
+  const decision = String(
+    payload?.verification?.decision ||
+    payload?.decision ||
+    payload?.verification?.status ||
+    payload?.status ||
+    payload?.action ||
+    ""
+  ).toLowerCase();
+
+  if (["approved", "verified"].includes(decision)) return "verified";
+  if (["declined", "failed", "resubmission_requested", "expired", "abandoned"].includes(decision)) {
+    return "failed";
+  }
+  if (["submitted", "started", "processing", "review"].includes(decision)) {
+    return "processing";
+  }
+  return null;
+}
+
 app.post(
-  "/api/webhooks/stripe/identity",
-  express.raw({ type: "application/json", limit: "500kb" }),
+  "/api/webhooks/veriff/identity",
+  express.raw({ type: "application/json", limit: "2mb" }),
   async (req, res) => {
-    if (!STRIPE_WEBHOOK_SECRET) {
+    if (!VERIFF_API_KEY || !VERIFF_SHARED_SECRET) {
       return res.status(503).send("Webhook not configured");
     }
 
     const payload = Buffer.isBuffer(req.body) ? req.body : Buffer.from("");
-    const signature = req.headers["stripe-signature"];
+    const authClient = req.headers["x-auth-client"];
+    const signature = req.headers["x-hmac-signature"];
 
-    if (!verifyStripeWebhookSignature(payload.toString("utf8"), signature)) {
+    if (authClient !== VERIFF_API_KEY || !verifyVeriffSignature(payload, signature)) {
       return res.status(400).send("Invalid signature");
     }
 
@@ -202,31 +223,13 @@ app.post(
       return res.status(400).send("Invalid payload");
     }
 
-    const statusByEvent = {
-      "identity.verification_session.processing": "processing",
-      "identity.verification_session.verified": "verified",
-      "identity.verification_session.canceled": "canceled",
-      "identity.verification_session.requires_input": "failed"
-    };
-    const status = statusByEvent[event.type];
+    const sessionId = getVeriffSessionId(event);
+    const userId = getVeriffUserId(event);
+    const status = mapVeriffStatus(event);
 
-    if (!status) return res.json({ received: true });
+    if (!sessionId || !userId || !status) return res.json({ received: true });
 
     try {
-      const eventSession = event.data?.object || {};
-      const sessionId = eventSession.id;
-      const userId =
-        eventSession.metadata?.user_id || eventSession.client_reference_id;
-
-      if (!sessionId || !userId) {
-        return res.json({ received: true });
-      }
-
-      const session = await stripeRequest(
-        `/v1/identity/verification_sessions/${encodeURIComponent(sessionId)}`
-      );
-      const currentStatus =
-        status === "failed" ? "failed" : session.status || status;
       const { data: currentData, error: currentError } =
         await db.auth.admin.getUserById(userId);
 
@@ -239,23 +242,18 @@ app.post(
         return res.status(409).send("Session does not belong to user");
       }
 
-      if (currentIdentity.status === "verified" && currentStatus !== "verified") {
+      if (currentIdentity.status === "verified" && status !== "verified") {
         return res.json({ received: true });
       }
 
+      const eventDate = event.timestamp || event.createdAt || new Date().toISOString();
       await updateIdentityVerification(userId, {
-        status: currentStatus,
+        provider: "veriff",
+        status,
         sessionId,
-        createdAt: event.created
-          ? new Date(event.created * 1000).toISOString()
-          : currentIdentity.createdAt,
-        lastUpdatedAt: event.created
-          ? new Date(event.created * 1000).toISOString()
-          : new Date().toISOString(),
-        completedAt:
-          currentStatus === "verified" && event.created
-            ? new Date(event.created * 1000).toISOString()
-            : currentIdentity.completedAt
+        createdAt: currentIdentity.createdAt,
+        lastUpdatedAt: eventDate,
+        completedAt: status === "verified" ? eventDate : currentIdentity.completedAt
       });
 
       return res.json({ received: true });
@@ -265,7 +263,7 @@ app.post(
   }
 );
 
-app.use(express.json({ limit: "500kb" }));
+app.use(express.json({ limit: "25mb" }));
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
 app.use(
@@ -775,6 +773,7 @@ function getIdentityVerification(user) {
     return {
       status: "not_started",
       verified: false,
+      provider: null,
       sessionId: null,
       createdAt: null,
       completedAt: null,
@@ -785,6 +784,7 @@ function getIdentityVerification(user) {
   return {
     status: value.status || "not_started",
     verified: value.status === "verified",
+    provider: value.provider || null,
     sessionId: value.session_id || value.sessionId || null,
     createdAt: value.created_at || value.createdAt || null,
     completedAt: value.completed_at || value.completedAt || null,
@@ -808,6 +808,7 @@ async function updateIdentityVerification(userId, verification) {
     user_metadata: {
       ...currentMetadata,
       identity_verification: {
+        provider: verification.provider || "veriff",
         status: verification.status,
         session_id: verification.sessionId,
         created_at: verification.createdAt || null,
@@ -822,27 +823,38 @@ async function updateIdentityVerification(userId, verification) {
   return data.user;
 }
 
-async function stripeRequest(path, options = {}) {
-  if (!STRIPE_SECRET_KEY) {
-    const error = new Error("stripe_identity_not_configured");
+async function veriffRequest(path, options = {}) {
+  if (!VERIFF_API_KEY || !VERIFF_SHARED_SECRET) {
+    const error = new Error("veriff_identity_not_configured");
     error.status = 503;
     throw error;
   }
 
-  const response = await fetch(`https://api.stripe.com${path}`, {
+  const method = String(options.method || "GET").toUpperCase();
+  const body = options.body || "";
+  const signingValue = method === "GET" || method === "DELETE"
+    ? options.sessionId
+    : body;
+  const signature = crypto
+    .createHmac("sha256", VERIFF_SHARED_SECRET)
+    .update(String(signingValue || ""))
+    .digest("hex");
+
+  const response = await fetch(`${VERIFF_BASE_URL}${path}`, {
     ...options,
     headers: {
-      Authorization: `Basic ${Buffer.from(`${STRIPE_SECRET_KEY}:`).toString("base64")}`,
-      "Stripe-Version": STRIPE_API_VERSION,
+      "Content-Type": "application/json",
+      "X-AUTH-CLIENT": VERIFF_API_KEY,
+      "X-HMAC-SIGNATURE": signature,
       ...(options.headers || {})
     }
   });
 
   const data = await response.json().catch(() => ({}));
 
-  if (!response.ok) {
-    const error = new Error(data.error?.message || "stripe_request_failed");
-    error.status = response.status;
+  if (!response.ok || data.status === "fail") {
+    const error = new Error(data.message || "veriff_request_failed");
+    error.status = response.status || 502;
     error.payload = data;
     throw error;
   }
@@ -850,23 +862,29 @@ async function stripeRequest(path, options = {}) {
   return data;
 }
 
-function mapStripeVerificationSession(session) {
-  const status =
-    session.status === "requires_input" && session.last_error
+function mapVeriffSession(session) {
+  const verification = session?.verification || session || {};
+  const rawStatus = String(
+    verification.decision || verification.status || session?.status || "created"
+  ).toLowerCase();
+  const status = ["approved", "verified"].includes(rawStatus)
+    ? "verified"
+    : ["declined", "failed", "resubmission_requested", "expired", "abandoned"].includes(rawStatus)
       ? "failed"
-      : session.status || "requires_input";
+      : ["started", "submitted", "processing", "review"].includes(rawStatus)
+        ? "processing"
+        : "not_started";
+  const createdAt = verification.createdAt || verification.created_at || null;
 
   return {
+    provider: "veriff",
     status,
     verified: status === "verified",
-    sessionId: session.id || null,
-    createdAt: session.created
-      ? new Date(session.created * 1000).toISOString()
+    sessionId: verification.id || session.id || null,
+    createdAt,
+    completedAt: status === "verified"
+      ? verification.completedAt || verification.completed_at || new Date().toISOString()
       : null,
-    completedAt:
-      status === "verified" && session.last_verification_report?.created
-        ? new Date(session.last_verification_report.created * 1000).toISOString()
-        : null,
     lastUpdatedAt: new Date().toISOString()
   };
 }
@@ -2224,25 +2242,26 @@ app.get("/api/identity/status", requireAuth, async (req, res) => {
     let identityVerification = getIdentityVerification(currentUser);
 
     if (
-      STRIPE_SECRET_KEY &&
+      VERIFF_API_KEY &&
+      VERIFF_SHARED_SECRET &&
       identityVerification.sessionId &&
       identityVerification.status !== "verified" &&
-      identityVerification.status !== "canceled"
+      identityVerification.status !== "failed"
     ) {
-      const session = await stripeRequest(
-        `/v1/identity/verification_sessions/${encodeURIComponent(identityVerification.sessionId)}?expand[]=last_verification_report`
+      const decision = await veriffRequest(
+        `/v1/sessions/${encodeURIComponent(identityVerification.sessionId)}/decision`,
+        { sessionId: identityVerification.sessionId }
       );
 
-      identityVerification = mapStripeVerificationSession(session);
+      identityVerification = mapVeriffSession(decision);
       await updateIdentityVerification(req.user.id, identityVerification);
     }
 
     return res.json({
       ok: true,
       enabled: Boolean(
-        STRIPE_SECRET_KEY && STRIPE_PUBLISHABLE_KEY && SUPABASE_SERVICE_ROLE_KEY
+        VERIFF_API_KEY && VERIFF_SHARED_SECRET && SUPABASE_SERVICE_ROLE_KEY
       ),
-      publishableKey: STRIPE_PUBLISHABLE_KEY,
       identityVerification
     });
   } catch (error) {
@@ -2257,10 +2276,10 @@ app.get("/api/identity/status", requireAuth, async (req, res) => {
 
 app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, res) => {
   try {
-    if (!STRIPE_SECRET_KEY) {
+    if (!VERIFF_API_KEY) {
       return res.status(503).json({
         ok: false,
-        error: "stripe_identity_not_configured"
+        error: "veriff_identity_not_configured"
       });
     }
 
@@ -2271,33 +2290,35 @@ app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, re
       });
     }
 
-    const body = new URLSearchParams();
-    body.set("type", "document");
-    body.set("client_reference_id", req.user.id);
-    body.set("metadata[user_id]", req.user.id);
-    body.set("metadata[email_hash]", hashValue(req.user.email));
-    body.set("options[document][require_live_capture]", "true");
-    body.set("options[document][require_matching_selfie]", "true");
-    body.set("return_url", getFrontendUrl("?identity=return"));
-
-    if (req.user.email) {
-      body.set("provided_details[email]", req.user.email);
-    }
-
-    const session = await stripeRequest("/v1/identity/verification_sessions", {
+    const body = JSON.stringify({
+      verification: {
+        vendorData: req.user.id,
+        endUserId: req.user.id,
+        callback: getFrontendUrl("?identity=return")
+      }
+    });
+    const response = await fetch(`${VERIFF_BASE_URL}/v1/sessions`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type": "application/json",
+        "X-AUTH-CLIENT": VERIFF_API_KEY
       },
       body
     });
+    const session = await response.json().catch(() => ({}));
 
-    const identityVerification = mapStripeVerificationSession(session);
+    if (!response.ok || session.status === "fail" || !session.verification?.id || !session.verification?.url) {
+      const error = new Error(session.message || "veriff_session_creation_failed");
+      error.status = response.status || 502;
+      throw error;
+    }
+
+    const identityVerification = mapVeriffSession(session);
     const updatedUser = await updateIdentityVerification(req.user.id, identityVerification);
 
     await logEvent(req, {
       action: "identity.verification_started",
-      target: "stripe.identity.verification_session",
+      target: "veriff.identity.verification_session",
       metadata: {
         sessionId: identityVerification.sessionId,
         status: identityVerification.status
@@ -2306,9 +2327,7 @@ app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, re
 
     return res.json({
       ok: true,
-      url: session.url,
-      clientSecret: session.client_secret || null,
-      publishableKey: STRIPE_PUBLISHABLE_KEY,
+      url: session.verification.url,
       identityVerification,
       user: publicUser(updatedUser)
     });
