@@ -2325,10 +2325,24 @@ async function startDiditIdentity(req, res, type) {
       },
       body
     });
-    const session = await response.json().catch(() => ({}));
+    const responseText = await response.text();
+    let session = {};
+    try {
+      session = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      session = {};
+    }
 
     if (!response.ok || !session.session_id || !session.url) {
-      const error = new Error(session.detail || session.message || "didit_session_creation_failed");
+      const workflowError = Array.isArray(session.workflow_id)
+        ? session.workflow_id[0]
+        : session.workflow_id;
+      const error = new Error(
+        session.detail ||
+        session.message ||
+        workflowError ||
+        "didit_session_creation_failed"
+      );
       error.status = response.status || 502;
       throw error;
     }
