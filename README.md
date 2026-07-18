@@ -1,8 +1,8 @@
 # My Account backend
 
-## Veriff Identity
+## Didit Identity
 
-The backend creates Veriff verification sessions only for the authenticated Supabase user. The browser receives only the temporary Veriff session URL, never the Veriff API key or shared secret, and the application does not store images, documents, videos, or biometric data.
+The backend creates Didit verification sessions only for the authenticated Supabase user. The browser receives only the temporary Didit hosted session URL, never the Didit API key or webhook secret, and the application does not store images, documents, videos, or biometric data.
 
 Identity state is stored in the user's Supabase metadata under `identity_verification`, limited to:
 
@@ -14,11 +14,11 @@ Identity state is stored in the user's Supabase metadata under `identity_verific
 
 Documents, images, biometric data, verification reports, and client secrets are not stored or logged.
 
-Required backend variables are listed in `.env.example`. Set `VERIFF_API_KEY` and `VERIFF_SHARED_SECRET` only in the backend deployment environment. `VERIFF_BASE_URL` should point to the base URL provided for the Veriff integration.
+Required backend variables are listed in `.env.example`. Set `DIDIT_API_KEY`, `DIDIT_WORKFLOW_ID` and `DIDIT_WEBHOOK_SECRET` only in the backend deployment environment. `DIDIT_BASE_URL` should remain `https://verification.didit.me` unless Didit provides another endpoint for the account.
 
-Configure a Veriff webhook endpoint at:
+Configure a Didit webhook endpoint at:
 
-`https://auth.lukintosh.com/api/webhooks/veriff/identity`
+`https://auth.lukintosh.com/api/webhooks/didit/identity`
 
 Subscribe it to these Identity events:
 
@@ -27,4 +27,4 @@ Subscribe it to these Identity events:
 - `identity.verification_session.canceled`
 - `identity.verification_session.requires_input`
 
-The endpoint verifies `X-AUTH-CLIENT` and `X-HMAC-SIGNATURE`, rejects events whose session ID is not already linked to the authenticated user, and stores only the provider, session ID, status, and timestamps. The authenticated status endpoint also rechecks Veriff, so a browser callback is never treated as proof of verification.
+The endpoint verifies `X-Signature-V2` and `X-Timestamp`, rejects events whose session ID is not already linked to the authenticated user, and stores only the provider, session ID, status, and timestamps. The authenticated status endpoint also rechecks Didit, so a browser callback is never treated as proof of verification.

@@ -35,9 +35,10 @@ const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || ".lukintosh.com";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || null;
 const OIDC_ISSUER = process.env.OIDC_ISSUER || API_BASE_URL;
 const OIDC_KEY_ID = process.env.OIDC_KEY_ID || "lukintosh-auth-dev";
-const VERIFF_BASE_URL = process.env.VERIFF_BASE_URL || "https://stationapi.veriff.com";
-const VERIFF_API_KEY = process.env.VERIFF_API_KEY || null;
-const VERIFF_SHARED_SECRET = process.env.VERIFF_SHARED_SECRET || null;
+const DIDIT_BASE_URL = process.env.DIDIT_BASE_URL || "https://verification.didit.me";
+const DIDIT_API_KEY = process.env.DIDIT_API_KEY || null;
+const DIDIT_WORKFLOW_ID = process.env.DIDIT_WORKFLOW_ID || null;
+const DIDIT_WEBHOOK_SECRET = process.env.DIDIT_WEBHOOK_SECRET || null;
 
 const EMAIL_FROM =
   process.env.EMAIL_FROM || "Lukintosh Accounts <security@lukintosh.com>";
@@ -144,16 +145,45 @@ app.use(
   })
 );
 
-function verifyVeriffSignature(payload, signature) {
-  if (!VERIFF_SHARED_SECRET || !signature) return false;
+function shortenDiditFloats(value) {
+  if (Array.isArray(value)) return value.map(shortenDiditFloats);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, shortenDiditFloats(item)])
+    );
+  }
+  return typeof value === "number" && Number.isInteger(value) ? Math.trunc(value) : value;
+}
 
+function sortDiditKeys(value) {
+  if (Array.isArray(value)) return value.map(sortDiditKeys);
+  if (value !== null && typeof value === "object") {
+    return Object.keys(value).sort().reduce((sorted, key) => {
+      sorted[key] = sortDiditKeys(value[key]);
+      return sorted;
+    }, {});
+  }
+  return value;
+}
+
+function verifyDiditSignature(rawBody, signature, timestamp) {
+  if (!DIDIT_WEBHOOK_SECRET || !signature || !timestamp) return false;
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {
+    return false;
+  }
+
+  const canonical = JSON.stringify(sortDiditKeys(shortenDiditFloats(parsed)));
   const expected = crypto
-    .createHmac("sha256", VERIFF_SHARED_SECRET)
-    .update(payload)
+    .createHmac("sha256", DIDIT_WEBHOOK_SECRET)
+    .update(canonical, "utf8")
     .digest("hex");
-
-  const expectedBuffer = Buffer.from(expected, "hex");
-  const signatureBuffer = Buffer.from(String(signature), "hex");
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const signatureBuffer = Buffer.from(String(signature), "utf8");
 
   return (
     expectedBuffer.length === signatureBuffer.length &&
@@ -161,94 +191,56 @@ function verifyVeriffSignature(payload, signature) {
   );
 }
 
-function getVeriffSessionId(payload) {
-  return (
-    payload?.verification?.id ||
-    payload?.sessionId ||
-    payload?.id ||
-    null
-  );
-}
-
-function getVeriffUserId(payload) {
-  return (
-    payload?.verification?.vendorData ||
-    payload?.verification?.endUserId ||
-    payload?.vendorData ||
-    payload?.endUserId ||
-    null
-  );
-}
-
-function mapVeriffStatus(payload) {
-  const decision = String(
-    payload?.verification?.decision ||
-    payload?.decision ||
-    payload?.verification?.status ||
-    payload?.status ||
-    payload?.action ||
-    ""
-  ).toLowerCase();
-
-  if (["approved", "verified"].includes(decision)) return "verified";
-  if (["declined", "failed", "resubmission_requested", "expired", "abandoned"].includes(decision)) {
-    return "failed";
-  }
-  if (["submitted", "started", "processing", "review"].includes(decision)) {
-    return "processing";
-  }
-  return null;
+function mapDiditStatus(value) {
+  const status = String(value || "").toLowerCase();
+  if (status === "approved") return "verified";
+  if (["declined", "abandoned", "expired", "kyc expired"].includes(status)) return "failed";
+  if (["in progress", "in review", "resubmitted", "awaiting user"].includes(status)) return "processing";
+  return "not_started";
 }
 
 app.post(
-  "/api/webhooks/veriff/identity",
+  "/api/webhooks/didit/identity",
   express.raw({ type: "application/json", limit: "2mb" }),
   async (req, res) => {
-    if (!VERIFF_API_KEY || !VERIFF_SHARED_SECRET) {
+    if (!DIDIT_API_KEY || !DIDIT_WEBHOOK_SECRET) {
       return res.status(503).send("Webhook not configured");
     }
 
-    const payload = Buffer.isBuffer(req.body) ? req.body : Buffer.from("");
-    const authClient = req.headers["x-auth-client"];
-    const signature = req.headers["x-hmac-signature"];
-
-    if (authClient !== VERIFF_API_KEY || !verifyVeriffSignature(payload, signature)) {
-      return res.status(400).send("Invalid signature");
+    const rawBody = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
+    if (!verifyDiditSignature(
+      rawBody,
+      req.headers["x-signature-v2"],
+      req.headers["x-timestamp"]
+    )) {
+      return res.status(401).send("Invalid signature");
     }
 
     let event;
     try {
-      event = JSON.parse(payload.toString("utf8"));
+      event = JSON.parse(rawBody);
     } catch {
       return res.status(400).send("Invalid payload");
     }
 
-    const sessionId = getVeriffSessionId(event);
-    const userId = getVeriffUserId(event);
-    const status = mapVeriffStatus(event);
-
-    if (!sessionId || !userId || !status) return res.json({ received: true });
+    const sessionId = event.session_id;
+    const userId = event.vendor_data;
+    const status = mapDiditStatus(event.status || event.decision?.status);
+    if (!sessionId || !userId) return res.json({ received: true });
 
     try {
-      const { data: currentData, error: currentError } =
-        await db.auth.admin.getUserById(userId);
-
-      if (currentError || !currentData.user) {
-        return res.status(404).send("User not found");
-      }
+      const { data: currentData, error: currentError } = await db.auth.admin.getUserById(userId);
+      if (currentError || !currentData.user) return res.status(404).send("User not found");
 
       const currentIdentity = getIdentityVerification(currentData.user);
-      if (currentIdentity.sessionId !== sessionId) {
-        return res.status(409).send("Session does not belong to user");
-      }
+      if (currentIdentity.sessionId !== sessionId) return res.status(409).send("Session does not belong to user");
+      if (currentIdentity.status === "verified" && status !== "verified") return res.json({ received: true });
 
-      if (currentIdentity.status === "verified" && status !== "verified") {
-        return res.json({ received: true });
-      }
-
-      const eventDate = event.timestamp || event.createdAt || new Date().toISOString();
+      const eventDate = event.created_at
+        ? new Date(event.created_at * 1000).toISOString()
+        : new Date().toISOString();
       await updateIdentityVerification(userId, {
-        provider: "veriff",
+        provider: "didit",
         status,
         sessionId,
         createdAt: currentIdentity.createdAt,
@@ -808,7 +800,7 @@ async function updateIdentityVerification(userId, verification) {
     user_metadata: {
       ...currentMetadata,
       identity_verification: {
-        provider: verification.provider || "veriff",
+        provider: verification.provider || "didit",
         status: verification.status,
         session_id: verification.sessionId,
         created_at: verification.createdAt || null,
@@ -823,29 +815,18 @@ async function updateIdentityVerification(userId, verification) {
   return data.user;
 }
 
-async function veriffRequest(path, options = {}) {
-  if (!VERIFF_API_KEY || !VERIFF_SHARED_SECRET) {
-    const error = new Error("veriff_identity_not_configured");
+async function diditRequest(path, options = {}) {
+  if (!DIDIT_API_KEY) {
+    const error = new Error("didit_identity_not_configured");
     error.status = 503;
     throw error;
   }
 
-  const method = String(options.method || "GET").toUpperCase();
-  const body = options.body || "";
-  const signingValue = method === "GET" || method === "DELETE"
-    ? options.sessionId
-    : body;
-  const signature = crypto
-    .createHmac("sha256", VERIFF_SHARED_SECRET)
-    .update(String(signingValue || ""))
-    .digest("hex");
-
-  const response = await fetch(`${VERIFF_BASE_URL}${path}`, {
+  const response = await fetch(`${DIDIT_BASE_URL}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      "X-AUTH-CLIENT": VERIFF_API_KEY,
-      "X-HMAC-SIGNATURE": signature,
+      "x-api-key": DIDIT_API_KEY,
       ...(options.headers || {})
     }
   });
@@ -853,7 +834,7 @@ async function veriffRequest(path, options = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok || data.status === "fail") {
-    const error = new Error(data.message || "veriff_request_failed");
+    const error = new Error(data.detail || data.message || "didit_request_failed");
     error.status = response.status || 502;
     error.payload = data;
     throw error;
@@ -862,28 +843,18 @@ async function veriffRequest(path, options = {}) {
   return data;
 }
 
-function mapVeriffSession(session) {
-  const verification = session?.verification || session || {};
-  const rawStatus = String(
-    verification.decision || verification.status || session?.status || "created"
-  ).toLowerCase();
-  const status = ["approved", "verified"].includes(rawStatus)
-    ? "verified"
-    : ["declined", "failed", "resubmission_requested", "expired", "abandoned"].includes(rawStatus)
-      ? "failed"
-      : ["started", "submitted", "processing", "review"].includes(rawStatus)
-        ? "processing"
-        : "not_started";
-  const createdAt = verification.createdAt || verification.created_at || null;
+function mapDiditSession(session) {
+  const rawStatus = session?.status || session?.decision?.status || "Not Started";
+  const status = mapDiditStatus(rawStatus);
 
   return {
-    provider: "veriff",
+    provider: "didit",
     status,
     verified: status === "verified",
-    sessionId: verification.id || session.id || null,
-    createdAt,
+    sessionId: session.session_id || session.id || null,
+    createdAt: session.created_at || new Date().toISOString(),
     completedAt: status === "verified"
-      ? verification.completedAt || verification.completed_at || new Date().toISOString()
+      ? session.completed_at || new Date().toISOString()
       : null,
     lastUpdatedAt: new Date().toISOString()
   };
@@ -2242,25 +2213,23 @@ app.get("/api/identity/status", requireAuth, async (req, res) => {
     let identityVerification = getIdentityVerification(currentUser);
 
     if (
-      VERIFF_API_KEY &&
-      VERIFF_SHARED_SECRET &&
+      DIDIT_API_KEY &&
       identityVerification.sessionId &&
       identityVerification.status !== "verified" &&
       identityVerification.status !== "failed"
     ) {
-      const decision = await veriffRequest(
-        `/v1/sessions/${encodeURIComponent(identityVerification.sessionId)}/decision`,
-        { sessionId: identityVerification.sessionId }
+      const decision = await diditRequest(
+        `/v3/session/${encodeURIComponent(identityVerification.sessionId)}/decision/`
       );
 
-      identityVerification = mapVeriffSession(decision);
+      identityVerification = mapDiditSession(decision);
       await updateIdentityVerification(req.user.id, identityVerification);
     }
 
     return res.json({
       ok: true,
       enabled: Boolean(
-        VERIFF_API_KEY && VERIFF_SHARED_SECRET && SUPABASE_SERVICE_ROLE_KEY
+        DIDIT_API_KEY && DIDIT_WORKFLOW_ID && DIDIT_WEBHOOK_SECRET && SUPABASE_SERVICE_ROLE_KEY
       ),
       identityVerification
     });
@@ -2276,10 +2245,10 @@ app.get("/api/identity/status", requireAuth, async (req, res) => {
 
 app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, res) => {
   try {
-    if (!VERIFF_API_KEY) {
+    if (!DIDIT_API_KEY || !DIDIT_WORKFLOW_ID) {
       return res.status(503).json({
         ok: false,
-        error: "veriff_identity_not_configured"
+        error: "didit_identity_not_configured"
       });
     }
 
@@ -2291,34 +2260,34 @@ app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, re
     }
 
     const body = JSON.stringify({
-      verification: {
-        vendorData: req.user.id,
-        endUserId: req.user.id,
-        callback: getFrontendUrl("?identity=return")
-      }
+      workflow_id: DIDIT_WORKFLOW_ID,
+      vendor_data: req.user.id,
+      callback: getFrontendUrl("?identity=return"),
+      callback_method: "both",
+      language: "pt"
     });
-    const response = await fetch(`${VERIFF_BASE_URL}/v1/sessions`, {
+    const response = await fetch(`${DIDIT_BASE_URL}/v3/session/`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-AUTH-CLIENT": VERIFF_API_KEY
+        "x-api-key": DIDIT_API_KEY
       },
       body
     });
     const session = await response.json().catch(() => ({}));
 
-    if (!response.ok || session.status === "fail" || !session.verification?.id || !session.verification?.url) {
-      const error = new Error(session.message || "veriff_session_creation_failed");
+    if (!response.ok || !session.session_id || !session.url) {
+      const error = new Error(session.detail || session.message || "didit_session_creation_failed");
       error.status = response.status || 502;
       throw error;
     }
 
-    const identityVerification = mapVeriffSession(session);
+    const identityVerification = mapDiditSession(session);
     const updatedUser = await updateIdentityVerification(req.user.id, identityVerification);
 
     await logEvent(req, {
       action: "identity.verification_started",
-      target: "veriff.identity.verification_session",
+      target: "didit.identity.verification_session",
       metadata: {
         sessionId: identityVerification.sessionId,
         status: identityVerification.status
@@ -2327,7 +2296,7 @@ app.post("/api/identity/start", requireAuth, requireMfaIfEnabled, async (req, re
 
     return res.json({
       ok: true,
-      url: session.verification.url,
+      url: session.url,
       identityVerification,
       user: publicUser(updatedUser)
     });
