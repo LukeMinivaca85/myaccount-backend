@@ -2272,7 +2272,10 @@ app.get("/api/identity/status", requireAuth, async (req, res) => {
     return res.json({
       ok: true,
       enabled: Boolean(
-        DIDIT_API_KEY && (DIDIT_FACE_WORKFLOW_ID || DIDIT_DOCUMENT_WORKFLOW_ID) && DIDIT_WEBHOOK_SECRET && SUPABASE_SERVICE_ROLE_KEY
+        DIDIT_API_KEY &&
+        (type === "document" ? DIDIT_DOCUMENT_WORKFLOW_ID : DIDIT_FACE_WORKFLOW_ID) &&
+        DIDIT_WEBHOOK_SECRET &&
+        SUPABASE_SERVICE_ROLE_KEY
       ),
       identityVerification
     });
