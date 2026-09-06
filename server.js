@@ -82,8 +82,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     persistSession: false,
     autoRefreshToken: false,
     storage: serverPkceStorage
-  }
-
+   }
+});
 const db = createClient(
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY,
