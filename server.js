@@ -83,7 +83,6 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     autoRefreshToken: false,
     storage: serverPkceStorage
   }
-});
 
 const db = createClient(
   SUPABASE_URL,
@@ -907,431 +906,10 @@ function mapDiditSession(session) {
    EMAILS
 ========================= */
 
-function getSecurityEmailBase({
-  title,
-  preview,
-  body,
-  label = "SECURITY"
-}) {
-  return `
-<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="supported-color-schemes" content="dark">
-  <title>${escapeHtml(title)}</title>
-</head>
-
-<body style="
-  margin:0;
-  padding:0;
-  width:100%;
-  background:#030304;
-  color:#ffffff;
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
-  -webkit-font-smoothing:antialiased;
-">
-
-  <!-- PREHEADER -->
-  <div style="
-    display:none;
-    max-height:0;
-    max-width:0;
-    overflow:hidden;
-    opacity:0;
-    color:transparent;
-    mso-hide:all;
-  ">
-    ${escapeHtml(preview)}
-  </div>
-
-  <table
-    role="presentation"
-    width="100%"
-    cellspacing="0"
-    cellpadding="0"
-    border="0"
-    style="
-      width:100%;
-      background:#030304;
-    "
-  >
-    <tr>
-      <td align="center" style="padding:0 16px;">
-
-        <table
-          role="presentation"
-          width="100%"
-          cellspacing="0"
-          cellpadding="0"
-          border="0"
-          style="
-            width:100%;
-            max-width:660px;
-            margin:0 auto;
-          "
-        >
-
-          <!-- BRAND HEADER -->
-          <tr>
-            <td style="padding:46px 6px 30px;">
-
-              <table
-                role="presentation"
-                width="100%"
-                cellspacing="0"
-                cellpadding="0"
-                border="0"
-              >
-                <tr>
-
-                  <td valign="middle">
-
-                    <table
-                      role="presentation"
-                      cellspacing="0"
-                      cellpadding="0"
-                      border="0"
-                    >
-                      <tr>
-
-                        <td
-                          valign="middle"
-                          style="padding-right:14px;"
-                        >
-                          <img
-                            src="https://lukintosh.com/assets/brand/white/symbol.svg"
-                            width="46"
-                            height="46"
-                            alt="Lukintosh"
-                            style="
-                              display:block;
-                              width:46px;
-                              height:46px;
-                              border:0;
-                              outline:none;
-                            "
-                          >
-                        </td>
-
-                        <td valign="middle">
-
-                          <div style="
-                            color:#ffffff;
-                            font-size:15px;
-                            line-height:1.2;
-                            font-weight:700;
-                            letter-spacing:-.3px;
-                          ">
-                            Lukintosh
-                          </div>
-
-                          <div style="
-                            margin-top:4px;
-                            color:#686870;
-                            font-size:10px;
-                            line-height:1.2;
-                            font-weight:700;
-                            letter-spacing:1.5px;
-                          ">
-                            ACCOUNTS
-                          </div>
-
-                        </td>
-
-                      </tr>
-                    </table>
-
-                  </td>
-
-
-                  <td
-                    align="right"
-                    valign="middle"
-                  >
-
-                    <span style="
-                      display:inline-block;
-                      padding:8px 12px;
-                      border:1px solid #29292e;
-                      border-radius:999px;
-                      color:#9b9ba4;
-                      font-size:9px;
-                      line-height:1;
-                      font-weight:800;
-                      letter-spacing:1.6px;
-                      background:#0b0b0d;
-                    ">
-                      ${escapeHtml(label)}
-                    </span>
-
-                  </td>
-
-                </tr>
-              </table>
-
-            </td>
-          </tr>
-
-
-          <!-- HERO CARD -->
-          <tr>
-            <td>
-
-              <table
-                role="presentation"
-                width="100%"
-                cellspacing="0"
-                cellpadding="0"
-                border="0"
-                style="
-                  width:100%;
-                  background:#0a0a0c;
-                  border:1px solid #242429;
-                  border-radius:34px;
-                  overflow:hidden;
-                "
-              >
-
-                <!-- ROSÉ QUARTZ -->
-                <tr>
-                  <td
-                    height="6"
-                    style="
-                      height:6px;
-                      line-height:6px;
-                      font-size:0;
-                      background:#edc5d0;
-                    "
-                  >
-                    &nbsp;
-                  </td>
-                </tr>
-
-
-                <!-- HERO TITLE -->
-                <tr>
-                  <td style="
-                    padding:54px 46px 20px;
-                  ">
-
-                    <div style="
-                      margin-bottom:18px;
-                      color:#dcaebb;
-                      font-size:10px;
-                      line-height:1.3;
-                      font-weight:800;
-                      letter-spacing:2.7px;
-                    ">
-                      LUKINTOSH SECURE IDENTITY
-                    </div>
-
-                    <h1 style="
-                      margin:0;
-                      max-width:500px;
-                      color:#ffffff;
-                      font-size:44px;
-                      line-height:1.02;
-                      font-weight:700;
-                      letter-spacing:-2.3px;
-                    ">
-                      ${escapeHtml(title)}
-                    </h1>
-
-                  </td>
-                </tr>
-
-
-                <!-- DIVIDER -->
-                <tr>
-                  <td style="padding:18px 46px 0;">
-
-                    <table
-                      width="100%"
-                      cellspacing="0"
-                      cellpadding="0"
-                      border="0"
-                      role="presentation"
-                    >
-                      <tr>
-
-                        <td
-                          width="42"
-                          height="1"
-                          style="
-                            width:42px;
-                            height:1px;
-                            background:#e7b6c4;
-                            font-size:0;
-                          "
-                        >
-                          &nbsp;
-                        </td>
-
-                        <td
-                          height="1"
-                          style="
-                            height:1px;
-                            background:#202025;
-                            font-size:0;
-                          "
-                        >
-                          &nbsp;
-                        </td>
-
-                      </tr>
-                    </table>
-
-                  </td>
-                </tr>
-
-
-                <!-- CONTENT -->
-                <tr>
-                  <td style="
-                    padding:34px 46px 50px;
-                  ">
-                    ${body}
-                  </td>
-                </tr>
-
-              </table>
-
-            </td>
-          </tr>
-
-
-          <!-- SECURITY STRIP -->
-          <tr>
-            <td style="padding:18px 0 0;">
-
-              <table
-                role="presentation"
-                width="100%"
-                cellspacing="0"
-                cellpadding="0"
-                border="0"
-                style="
-                  width:100%;
-                  background:#08080a;
-                  border:1px solid #19191d;
-                  border-radius:20px;
-                "
-              >
-                <tr>
-
-                  <td style="
-                    padding:18px 20px;
-                    color:#777780;
-                    font-size:11px;
-                    line-height:1.7;
-                  ">
-
-                    <span style="
-                      color:#d8aeba;
-                      font-weight:800;
-                    ">
-                      Protected by Lukintosh Accounts
-                    </span>
-
-                    <br>
-
-                    Nunca compartilhe sua senha, código de verificação
-                    ou informações de segurança da sua conta.
-
-                  </td>
-
-                </tr>
-              </table>
-
-            </td>
-          </tr>
-
-
-          <!-- FOOTER -->
-          <tr>
-            <td style="
-              padding:30px 10px 48px;
-            ">
-
-              <table
-                role="presentation"
-                width="100%"
-                cellspacing="0"
-                cellpadding="0"
-                border="0"
-              >
-                <tr>
-
-                  <td
-                    style="
-                      color:#56565f;
-                      font-size:11px;
-                      line-height:1.75;
-                    "
-                  >
-                    Lukintosh Accounts<br>
-                    Identity · Security · Privacy
-                  </td>
-
-
-                  <td
-                    align="right"
-                    style="
-                      color:#46464e;
-                      font-size:10px;
-                      line-height:1.75;
-                    "
-                  >
-                    © ${new Date().getFullYear()} Lukintosh
-                  </td>
-
-                </tr>
-              </table>
-
-            </td>
-          </tr>
-
-        </table>
-
-      </td>
-    </tr>
-  </table>
-
-</body>
-</html>
-  `;
-}
-
-
-async function sendEmail({ to, subject, html }) {
-  if (!resend) {
-    console.warn("Resend disabled: RESEND_API_KEY is missing.");
-    return { skipped: true };
-  }
-
-  const { data, error } = await resend.emails.send({
-    from: EMAIL_FROM,
-    to: [to],
-    subject,
-    html,
-    replyTo: EMAIL_REPLY_TO
-  });
-
-  if (error) {
-    console.warn("Resend email failed:", error);
-    return { error };
-  }
-
-  return { data };
-}
-
-
-/* ==========================================
-   NOVO LOGIN DETECTADO
-========================================== */
+/* =========================================================
+   LUKINTOSH ACCOUNTS
+   NEW SIGN-IN EXPERIENCE
+========================================================= */
 
 async function sendNewLoginEmail({
   user,
@@ -1351,26 +929,85 @@ async function sendNewLoginEmail({
   });
 
   const html = getSecurityEmailBase({
-    title: "Um novo dispositivo entrou.",
-    label: "NEW SIGN-IN",
+    title: "Um novo acesso à sua conta.",
+    label: "NOVO ACESSO",
     preview:
-      "Detectamos um novo acesso à sua conta Lukintosh.",
+      "Um novo dispositivo acabou de acessar sua conta Lukintosh.",
 
     body: `
-
       <p style="
-        margin:0 0 32px;
-        max-width:480px;
-        color:#aaaab2;
+        margin:0 0 34px;
+        max-width:510px;
+        color:#aaaab3;
         font-size:16px;
-        line-height:1.7;
+        line-height:1.75;
       ">
-        Sua conta Lukintosh acabou de ser acessada.
-        Confira os detalhes desta sessão para confirmar
-        que a atividade foi sua.
+        Detectamos uma nova sessão na sua identidade Lukintosh.
+        Veja os detalhes abaixo e confirme que reconhece este acesso.
       </p>
 
 
+      <!-- LIVE STATUS -->
+      <table
+        role="presentation"
+        width="100%"
+        cellspacing="0"
+        cellpadding="0"
+        border="0"
+        style="
+          width:100%;
+          margin:0 0 18px;
+          background:#181316;
+          border:1px solid #46313a;
+          border-radius:18px;
+        "
+      >
+        <tr>
+          <td style="padding:16px 18px;">
+
+            <table
+              role="presentation"
+              cellspacing="0"
+              cellpadding="0"
+              border="0"
+            >
+              <tr>
+
+                <td
+                  width="10"
+                  height="10"
+                  style="
+                    width:10px;
+                    height:10px;
+                    background:#e7b6c4;
+                    border-radius:999px;
+                    font-size:0;
+                    line-height:0;
+                  "
+                >
+                  &nbsp;
+                </td>
+
+                <td style="
+                  padding-left:11px;
+                  color:#e7bdc9;
+                  font-size:10px;
+                  line-height:1;
+                  font-weight:800;
+                  letter-spacing:1.7px;
+                ">
+                  NOVA SESSÃO DETECTADA
+                </td>
+
+              </tr>
+            </table>
+
+          </td>
+        </tr>
+      </table>
+
+
+      <!-- SESSION CARD -->
       <table
         role="presentation"
         width="100%"
@@ -1380,32 +1017,35 @@ async function sendNewLoginEmail({
         style="
           width:100%;
           background:#111114;
-          border:1px solid #2c2c31;
-          border-radius:24px;
+          border:1px solid #2a2a30;
+          border-radius:26px;
           overflow:hidden;
         "
       >
 
+        <!-- ACCOUNT -->
         <tr>
           <td style="
-            padding:24px 24px 17px;
+            padding:25px 25px 20px;
             border-bottom:1px solid #242429;
           ">
 
             <div style="
-              color:#696972;
+              margin:0 0 8px;
+              color:#666670;
               font-size:9px;
+              line-height:1;
               font-weight:800;
-              letter-spacing:2px;
-              margin-bottom:7px;
+              letter-spacing:2.2px;
             ">
-              ACCOUNT
+              CONTA
             </div>
 
             <div style="
               color:#ffffff;
-              font-size:15px;
+              font-size:16px;
               line-height:1.5;
+              font-weight:600;
             ">
               ${escapeHtml(user.email)}
             </div>
@@ -1414,52 +1054,85 @@ async function sendNewLoginEmail({
         </tr>
 
 
+        <!-- DEVICE -->
         <tr>
           <td style="
-            padding:17px 24px;
+            padding:19px 25px;
             border-bottom:1px solid #242429;
           ">
 
-            <div style="
-              color:#696972;
-              font-size:9px;
-              font-weight:800;
-              letter-spacing:2px;
-              margin-bottom:7px;
-            ">
-              DEVICE
-            </div>
+            <table
+              role="presentation"
+              width="100%"
+              cellspacing="0"
+              cellpadding="0"
+              border="0"
+            >
+              <tr>
 
-            <div style="
-              color:#ffffff;
-              font-size:15px;
-            ">
-              ${escapeHtml(parsed.deviceName)}
-            </div>
+                <td valign="middle">
+
+                  <div style="
+                    margin:0 0 8px;
+                    color:#666670;
+                    font-size:9px;
+                    line-height:1;
+                    font-weight:800;
+                    letter-spacing:2.2px;
+                  ">
+                    DISPOSITIVO
+                  </div>
+
+                  <div style="
+                    color:#ffffff;
+                    font-size:15px;
+                    line-height:1.45;
+                  ">
+                    ${escapeHtml(parsed.deviceName)}
+                  </div>
+
+                </td>
+
+                <td
+                  align="right"
+                  valign="middle"
+                  style="
+                    color:#5d5d66;
+                    font-size:20px;
+                  "
+                >
+                  ◇
+                </td>
+
+              </tr>
+            </table>
 
           </td>
         </tr>
 
 
+        <!-- AUTH METHOD -->
         <tr>
           <td style="
-            padding:17px 24px;
+            padding:19px 25px;
             border-bottom:1px solid #242429;
           ">
 
             <div style="
-              color:#696972;
+              margin:0 0 8px;
+              color:#666670;
               font-size:9px;
+              line-height:1;
               font-weight:800;
-              letter-spacing:2px;
-              margin-bottom:7px;
+              letter-spacing:2.2px;
             ">
-              SIGN-IN METHOD
+              MÉTODO DE ENTRADA
             </div>
 
             <div style="
               color:#ffffff;
               font-size:15px;
+              line-height:1.45;
             ">
               ${escapeHtml(providerLabel)}
             </div>
@@ -1468,25 +1141,29 @@ async function sendNewLoginEmail({
         </tr>
 
 
+        <!-- NETWORK -->
         <tr>
           <td style="
-            padding:17px 24px;
+            padding:19px 25px;
             border-bottom:1px solid #242429;
           ">
 
             <div style="
-              color:#696972;
+              margin:0 0 8px;
+              color:#666670;
               font-size:9px;
+              line-height:1;
               font-weight:800;
-              letter-spacing:2px;
-              margin-bottom:7px;
+              letter-spacing:2.2px;
             ">
-              IP ADDRESS
+              ENDEREÇO IP
             </div>
 
             <div style="
               color:#ffffff;
               font-size:15px;
+              line-height:1.45;
+              font-family:'SFMono-Regular',Consolas,'Liberation Mono',monospace;
             ">
               ${escapeHtml(ip || "Indisponível")}
             </div>
@@ -1495,24 +1172,25 @@ async function sendNewLoginEmail({
         </tr>
 
 
+        <!-- TIME -->
         <tr>
-          <td style="
-            padding:17px 24px 24px;
-          ">
+          <td style="padding:19px 25px 25px;">
 
             <div style="
-              color:#696972;
+              margin:0 0 8px;
+              color:#666670;
               font-size:9px;
+              line-height:1;
               font-weight:800;
-              letter-spacing:2px;
-              margin-bottom:7px;
+              letter-spacing:2.2px;
             ">
-              TIME
+              DATA E HORA
             </div>
 
             <div style="
               color:#ffffff;
               font-size:15px;
+              line-height:1.45;
             ">
               ${escapeHtml(when)}
             </div>
@@ -1523,12 +1201,13 @@ async function sendNewLoginEmail({
       </table>
 
 
+      <!-- PRIMARY CTA -->
       <table
         role="presentation"
         cellspacing="0"
         cellpadding="0"
         border="0"
-        style="margin-top:30px;"
+        style="margin-top:31px;"
       >
         <tr>
 
@@ -1543,15 +1222,16 @@ async function sendNewLoginEmail({
               href="${escapeHtml(PUBLIC_SITE_URL)}"
               style="
                 display:inline-block;
-                padding:15px 25px;
-                color:#171014;
+                padding:15px 27px;
+                color:#181014;
                 font-size:13px;
+                line-height:1;
                 font-weight:800;
                 text-decoration:none;
                 border-radius:999px;
               "
             >
-              Revisar segurança
+              Revisar segurança da conta →
             </a>
 
           </td>
@@ -1560,64 +1240,7 @@ async function sendNewLoginEmail({
       </table>
 
 
-      <p style="
-        margin:27px 0 0;
-        color:#66666f;
-        font-size:12px;
-        line-height:1.75;
-      ">
-        Se foi você, nenhuma ação é necessária.
-
-        Se não reconhecer este acesso, altere sua senha
-        e encerre as sessões desconhecidas imediatamente.
-      </p>
-
-    `
-  });
-
-
-  return sendEmail({
-    to: user.email,
-    subject: "Novo acesso à sua conta Lukintosh",
-    html
-  });
-}
-
-
-/* ==========================================
-   CÓDIGO DE VERIFICAÇÃO
-========================================== */
-
-async function sendLoginCodeEmail({ user, code }) {
-  if (!user?.email) return { skipped: true };
-
-  const formattedCode =
-    String(code).length === 6
-      ? `${String(code).slice(0, 3)} ${String(code).slice(3)}`
-      : String(code);
-
-
-  const html = getSecurityEmailBase({
-    title: "Confirme que é você.",
-    label: "IDENTITY CHECK",
-    preview:
-      `${code} é seu código de verificação da Lukintosh.`,
-
-    body: `
-
-      <p style="
-        margin:0;
-        max-width:470px;
-        color:#aaaab2;
-        font-size:16px;
-        line-height:1.7;
-      ">
-        Uma tentativa de entrada precisa confirmar sua identidade.
-        Use o código abaixo para continuar no Lukintosh Accounts.
-      </p>
-
-
-      <!-- VERIFICATION CODE -->
+      <!-- RECOGNITION BLOCK -->
       <table
         role="presentation"
         width="100%"
@@ -1626,7 +1249,102 @@ async function sendLoginCodeEmail({ user, code }) {
         border="0"
         style="
           width:100%;
-          margin:34px 0 26px;
+          margin-top:31px;
+          background:#0d0d10;
+          border:1px solid #202025;
+          border-radius:18px;
+        "
+      >
+        <tr>
+
+          <td style="
+            padding:19px 20px;
+            color:#81818b;
+            font-size:12px;
+            line-height:1.75;
+          ">
+
+            <strong style="
+              display:block;
+              margin-bottom:4px;
+              color:#ddddE2;
+              font-size:13px;
+            ">
+              Foi você?
+            </strong>
+
+            Perfeito. Nenhuma ação é necessária.
+
+            <br><br>
+
+            <strong style="color:#d9adb9;">
+              Não reconhece este acesso?
+            </strong>
+
+            Altere sua senha e encerre sessões desconhecidas
+            na área de segurança da sua conta.
+
+          </td>
+
+        </tr>
+      </table>
+
+    `
+  });
+
+  return sendEmail({
+    to: user.email,
+    subject: "Novo acesso à sua conta · Lukintosh",
+    html
+  });
+}
+
+
+/* =========================================================
+   LUKINTOSH ACCOUNTS
+   VERIFICATION CODE EXPERIENCE
+========================================================= */
+
+async function sendLoginCodeEmail({ user, code }) {
+  if (!user?.email) return { skipped: true };
+
+  const rawCode = String(code);
+
+  const formattedCode =
+    rawCode.length === 6
+      ? `${rawCode.slice(0, 3)} ${rawCode.slice(3)}`
+      : rawCode;
+
+  const html = getSecurityEmailBase({
+    title: "Confirme que é você.",
+    label: "VERIFICAÇÃO",
+    preview:
+      `${rawCode} é seu código de verificação da Lukintosh.`,
+
+    body: `
+
+      <p style="
+        margin:0;
+        max-width:500px;
+        color:#aaaab3;
+        font-size:16px;
+        line-height:1.75;
+      ">
+        Uma tentativa de entrada está aguardando sua confirmação.
+        Use o código abaixo para continuar no Lukintosh Accounts.
+      </p>
+
+
+      <!-- CODE HERO -->
+      <table
+        role="presentation"
+        width="100%"
+        cellspacing="0"
+        cellpadding="0"
+        border="0"
+        style="
+          width:100%;
+          margin:36px 0 27px;
         "
       >
         <tr>
@@ -1634,62 +1352,62 @@ async function sendLoginCodeEmail({ user, code }) {
           <td
             align="center"
             style="
-              padding:42px 20px;
-              background:#111114;
-              border:1px solid #323238;
-              border-radius:26px;
+              padding:44px 18px 40px;
+              background:#121115;
+              border:1px solid #40323a;
+              border-radius:28px;
             "
           >
 
             <div style="
-              margin-bottom:15px;
-              color:#75757e;
+              margin:0 0 18px;
+              color:#88717a;
               font-size:9px;
+              line-height:1;
               font-weight:800;
-              letter-spacing:2.6px;
+              letter-spacing:2.8px;
             ">
-              LUKINTOSH VERIFICATION CODE
+              CÓDIGO DE VERIFICAÇÃO
             </div>
 
 
             <div style="
               color:#ffffff;
               font-family:'SFMono-Regular',Consolas,'Liberation Mono',monospace;
-              font-size:50px;
+              font-size:52px;
               line-height:1;
               font-weight:700;
-              letter-spacing:8px;
+              letter-spacing:9px;
               white-space:nowrap;
             ">
               ${escapeHtml(formattedCode)}
             </div>
 
 
+            <!-- TIMER BADGE -->
             <table
               role="presentation"
               cellspacing="0"
               cellpadding="0"
               border="0"
               style="
-                margin:22px auto 0;
+                margin:24px auto 0;
               "
             >
               <tr>
 
-                <td
-                  style="
-                    padding:7px 11px;
-                    border-radius:999px;
-                    background:#231a1e;
-                    border:1px solid #49343b;
-                    color:#e6bdc8;
-                    font-size:10px;
-                    line-height:1;
-                    font-weight:800;
-                    letter-spacing:.8px;
-                  "
-                >
-                  EXPIRA EM 10 MIN
+                <td style="
+                  padding:8px 12px;
+                  background:#25191e;
+                  border:1px solid #533740;
+                  border-radius:999px;
+                  color:#efc5d0;
+                  font-size:9px;
+                  line-height:1;
+                  font-weight:800;
+                  letter-spacing:1.2px;
+                ">
+                  VÁLIDO POR 10 MINUTOS
                 </td>
 
               </tr>
@@ -1701,7 +1419,7 @@ async function sendLoginCodeEmail({ user, code }) {
       </table>
 
 
-      <!-- WARNING -->
+      <!-- PRIVATE CODE -->
       <table
         role="presentation"
         width="100%"
@@ -1711,300 +1429,98 @@ async function sendLoginCodeEmail({ user, code }) {
         style="
           width:100%;
           background:#0e0e11;
-          border:1px solid #202025;
-          border-radius:18px;
+          border:1px solid #232329;
+          border-radius:19px;
+        "
+      >
+        <tr>
+
+          <td style="padding:20px;">
+
+            <table
+              role="presentation"
+              width="100%"
+              cellspacing="0"
+              cellpadding="0"
+              border="0"
+            >
+              <tr>
+
+                <td
+                  valign="top"
+                  width="28"
+                  style="
+                    width:28px;
+                    padding-top:1px;
+                    color:#e7b6c4;
+                    font-size:15px;
+                    line-height:1;
+                    font-weight:900;
+                  "
+                >
+                  ◆
+                </td>
+
+                <td style="
+                  color:#85858f;
+                  font-size:13px;
+                  line-height:1.75;
+                ">
+
+                  <strong style="
+                    display:block;
+                    margin-bottom:3px;
+                    color:#ddddE2;
+                  ">
+                    Este código pertence somente a você.
+                  </strong>
+
+                  Não encaminhe, publique ou compartilhe
+                  este código com ninguém.
+
+                </td>
+
+              </tr>
+            </table>
+
+          </td>
+
+        </tr>
+      </table>
+
+
+      <!-- ACCOUNT -->
+      <table
+        role="presentation"
+        width="100%"
+        cellspacing="0"
+        cellpadding="0"
+        border="0"
+        style="
+          width:100%;
+          margin-top:26px;
         "
       >
         <tr>
 
           <td style="
-            padding:18px 19px;
-            color:#85858e;
-            font-size:13px;
-            line-height:1.7;
+            color:#686871;
+            font-size:12px;
+            line-height:1.75;
           ">
+
+            Verificação solicitada para
 
             <span style="
-              display:inline-block;
-              margin-right:7px;
-              color:#e5b8c4;
-              font-weight:900;
-            ">
-              ◆
-            </span>
-
-            <strong style="color:#d7d7dc;">
-              Este código é pessoal.
-            </strong>
-
-            Não encaminhe, publique ou compartilhe este código
-            com ninguém.
-
-          </td>
-
-        </tr>
-      </table>
-
-
-      <p style="
-        margin:26px 0 0;
-        color:#66666f;
-        font-size:12px;
-        line-height:1.75;
-      ">
-        Solicitação para
-
-        <span style="
-          color:#aaaab2;
-          font-weight:600;
-        ">
-          ${escapeHtml(user.email)}
-        </span>.
-
-        Se você não tentou entrar, ignore esta mensagem.
-      </p>
-
-    `
-  });
-
-
-  return sendEmail({
-    to: user.email,
-    subject: `${code} · Código de verificação Lukintosh`,
-    html
-  });
-}
-
-
-async function sendEmail({ to, subject, html }) {
-  if (!resend) {
-    console.warn("Resend disabled: RESEND_API_KEY is missing.");
-    return { skipped: true };
-  }
-
-  const { data, error } = await resend.emails.send({
-    from: EMAIL_FROM,
-    to: [to],
-    subject,
-    html,
-    replyTo: EMAIL_REPLY_TO
-  });
-
-  if (error) {
-    console.warn("Resend email failed:", error);
-    return { error };
-  }
-
-  return { data };
-}
-
-
-/* ========================================
-   NOVO LOGIN
-======================================== */
-
-async function sendNewLoginEmail({
-  user,
-  req,
-  providerLabel = "Lukintosh Accounts"
-}) {
-  if (!user?.email) return { skipped: true };
-
-  const userAgent = getUserAgent(req);
-  const parsed = parseDevice(userAgent);
-  const ip = getClientIp(req);
-
-  const when = new Date().toLocaleString("pt-BR", {
-    timeZone: "America/Sao_Paulo"
-  });
-
-  const html = getSecurityEmailBase({
-    title: "Novo acesso à sua conta.",
-    preview:
-      "Um novo acesso foi detectado na sua conta Lukintosh.",
-
-    body: `
-
-      <p style="
-        margin:0 0 28px;
-        color:#b9b9c0;
-        font-size:16px;
-        line-height:1.7;
-      ">
-        Detectamos um novo login na sua conta Lukintosh.
-        Confira os detalhes abaixo para confirmar que esta atividade
-        foi sua.
-      </p>
-
-
-      <table
-        role="presentation"
-        width="100%"
-        cellspacing="0"
-        cellpadding="0"
-        border="0"
-        style="
-          width:100%;
-          background:#151518;
-          border:1px solid #2d2d32;
-          border-radius:22px;
-        "
-      >
-
-        <tr>
-          <td style="padding:24px 24px 10px;">
-
-            <div style="
-              color:#777780;
-              font-size:10px;
-              font-weight:800;
-              letter-spacing:1.7px;
-              margin-bottom:7px;
-            ">
-              CONTA
-            </div>
-
-            <div style="
-              color:#ffffff;
-              font-size:15px;
-              line-height:1.5;
+              color:#bcbcc4;
+              font-weight:600;
             ">
               ${escapeHtml(user.email)}
-            </div>
+            </span>.
 
-          </td>
-        </tr>
+            <br>
 
-
-        <tr>
-          <td style="padding:15px 24px 10px;">
-
-            <div style="
-              color:#777780;
-              font-size:10px;
-              font-weight:800;
-              letter-spacing:1.7px;
-              margin-bottom:7px;
-            ">
-              MÉTODO DE ENTRADA
-            </div>
-
-            <div style="
-              color:#ffffff;
-              font-size:15px;
-            ">
-              ${escapeHtml(providerLabel)}
-            </div>
-
-          </td>
-        </tr>
-
-
-        <tr>
-          <td style="padding:15px 24px 10px;">
-
-            <div style="
-              color:#777780;
-              font-size:10px;
-              font-weight:800;
-              letter-spacing:1.7px;
-              margin-bottom:7px;
-            ">
-              DISPOSITIVO
-            </div>
-
-            <div style="
-              color:#ffffff;
-              font-size:15px;
-            ">
-              ${escapeHtml(parsed.deviceName)}
-            </div>
-
-          </td>
-        </tr>
-
-
-        <tr>
-          <td style="padding:15px 24px 10px;">
-
-            <div style="
-              color:#777780;
-              font-size:10px;
-              font-weight:800;
-              letter-spacing:1.7px;
-              margin-bottom:7px;
-            ">
-              ENDEREÇO IP
-            </div>
-
-            <div style="
-              color:#ffffff;
-              font-size:15px;
-            ">
-              ${escapeHtml(ip || "Indisponível")}
-            </div>
-
-          </td>
-        </tr>
-
-
-        <tr>
-          <td style="padding:15px 24px 24px;">
-
-            <div style="
-              color:#777780;
-              font-size:10px;
-              font-weight:800;
-              letter-spacing:1.7px;
-              margin-bottom:7px;
-            ">
-              DATA E HORA
-            </div>
-
-            <div style="
-              color:#ffffff;
-              font-size:15px;
-            ">
-              ${escapeHtml(when)}
-            </div>
-
-          </td>
-        </tr>
-
-      </table>
-
-
-      <!-- BUTTON -->
-      <table
-        role="presentation"
-        cellspacing="0"
-        cellpadding="0"
-        border="0"
-        style="margin-top:30px;"
-      >
-        <tr>
-
-          <td
-            bgcolor="#e7b6c4"
-            style="
-              border-radius:999px;
-            "
-          >
-
-            <a
-              href="${escapeHtml(PUBLIC_SITE_URL)}"
-              style="
-                display:inline-block;
-                padding:14px 24px;
-                color:#171014;
-                font-size:14px;
-                font-weight:800;
-                text-decoration:none;
-                border-radius:999px;
-              "
-            >
-              Revisar atividade
-            </a>
+            Se você não tentou entrar, ignore esta mensagem.
 
           </td>
 
@@ -2012,61 +1528,7 @@ async function sendNewLoginEmail({
       </table>
 
 
-      <p style="
-        margin:28px 0 0;
-        color:#777780;
-        font-size:13px;
-        line-height:1.7;
-      ">
-        Se este acesso foi seu, nenhuma ação é necessária.
-        Caso não reconheça esta atividade, altere sua senha
-        e encerre sessões desconhecidas imediatamente.
-      </p>
-
-    `
-  });
-
-
-  return sendEmail({
-    to: user.email,
-    subject: "Novo acesso à sua conta Lukintosh",
-    html
-  });
-}
-
-
-/* ========================================
-   CÓDIGO DE VERIFICAÇÃO
-======================================== */
-
-async function sendLoginCodeEmail({ user, code }) {
-  if (!user?.email) return { skipped: true };
-
-  const formattedCode =
-    String(code).length === 6
-      ? `${String(code).slice(0, 3)} ${String(code).slice(3)}`
-      : String(code);
-
-
-  const html = getSecurityEmailBase({
-    title: "Confirme que é você.",
-    preview:
-      `${code} é seu código de verificação da Lukintosh.`,
-
-    body: `
-
-      <p style="
-        margin:0;
-        color:#b9b9c0;
-        font-size:16px;
-        line-height:1.7;
-      ">
-        Use o código abaixo para continuar entrando no
-        Lukintosh Accounts.
-      </p>
-
-
-      <!-- VERIFICATION CODE -->
+      <!-- MICRO BRAND -->
       <table
         role="presentation"
         width="100%"
@@ -2075,119 +1537,32 @@ async function sendLoginCodeEmail({ user, code }) {
         border="0"
         style="
           width:100%;
-          margin:34px 0 28px;
-        "
-      >
-        <tr>
-
-          <td
-            align="center"
-            style="
-              padding:36px 18px;
-              background:#151518;
-              border:1px solid #313137;
-              border-radius:24px;
-            "
-          >
-
-            <div style="
-              margin-bottom:13px;
-              color:#85858e;
-              font-size:10px;
-              line-height:1.4;
-              font-weight:800;
-              letter-spacing:2px;
-            ">
-              SEU CÓDIGO
-            </div>
-
-
-            <div style="
-              color:#ffffff;
-              font-family:'SFMono-Regular',Consolas,'Liberation Mono',monospace;
-              font-size:46px;
-              line-height:1.15;
-              font-weight:700;
-              letter-spacing:7px;
-              white-space:nowrap;
-            ">
-              ${escapeHtml(formattedCode)}
-            </div>
-
-
-            <div style="
-              margin-top:16px;
-              color:#d7a6b5;
-              font-size:12px;
-              font-weight:700;
-            ">
-              válido por 10 minutos
-            </div>
-
-          </td>
-
-        </tr>
-      </table>
-
-
-      <!-- SECURITY WARNING -->
-      <table
-        role="presentation"
-        width="100%"
-        cellspacing="0"
-        cellpadding="0"
-        border="0"
-        style="
-          width:100%;
-          background:#111113;
-          border-left:3px solid #e7b6c4;
-          border-radius:13px;
+          margin-top:32px;
+          border-top:1px solid #1e1e23;
         "
       >
         <tr>
 
           <td style="
-            padding:17px 18px;
-            color:#909099;
-            font-size:13px;
-            line-height:1.7;
+            padding-top:22px;
+            color:#4f4f58;
+            font-size:9px;
+            line-height:1.6;
+            font-weight:700;
+            letter-spacing:1.3px;
           ">
-
-            <strong style="color:#dedee2;">
-              Não compartilhe este código.
-            </strong>
-
-            Nenhum funcionário da Lukintosh solicitará
-            seu código de verificação.
-
+            LUKINTOSH ACCOUNTS · SECURE IDENTITY
           </td>
 
         </tr>
       </table>
 
-
-      <p style="
-        margin:26px 0 0;
-        color:#777780;
-        font-size:13px;
-        line-height:1.7;
-      ">
-        Esta tentativa de entrada foi feita para a conta
-
-        <span style="color:#bdbdc4;">
-          ${escapeHtml(user.email)}
-        </span>.
-
-        Se não foi você, ignore esta mensagem.
-      </p>
-
     `
   });
 
-
   return sendEmail({
     to: user.email,
-    subject: `${code} é seu código de verificação da Lukintosh`,
+    subject: `${rawCode} · Seu código de verificação Lukintosh`,
     html
   });
 }
